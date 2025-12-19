@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>客服接入示例</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    .example-section {
+      margin: 30px 0;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #f9f9f9;
+    }
+    .example-section h2 {
+      margin-top: 0;
+      color: #333;
+    }
+    .code-block {
+      background: #2d2d2d;
+      color: #f8f8f2;
+      padding: 15px;
+      border-radius: 4px;
+      overflow-x: auto;
+      margin: 10px 0;
+    }
+    .code-block code {
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+    }
+    .demo-button {
+      display: inline-block;
+      margin: 10px 5px;
+      padding: 10px 20px;
+      background: #409eff;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 4px;
+      transition: background 0.3s;
+    }
+    .demo-button:hover {
+      background: #66b1ff;
+    }
+  </style>
+</head>
+<body>
+  <h1>多客服系统接入示例</h1>
+  
+  <div class="example-section">
+    <h2>方式一：使用客服按钮组件（推荐）</h2>
+    <p>在您的网站中嵌入客服按钮，点击后弹出聊天窗口。</p>
+    
+    <h3>1. 自动分配最闲的客服</h3>
+    <div class="code-block">
+      <code>&lt;!-- 引入客服按钮组件 --&gt;<br>
+&lt;script src="https://your-domain.com/customer-service-button.js"&gt;&lt;/script&gt;<br>
+&lt;script&gt;<br>
+&nbsp;&nbsp;window.CUSTOMER_SERVICE_API_URL = 'https://your-api-domain.com';<br>
+&lt;/script&gt;</code>
+    </div>
+    
+    <h3>2. 指定客服ID</h3>
+    <div class="code-block">
+      <code>&lt;!-- 指定客服ID为1 --&gt;<br>
+&lt;a href="https://your-domain.com/button.html?api_base_url=https://your-api-domain.com&admin_id=1" target="_blank"&gt;联系客服&lt;/a&gt;</code>
+    </div>
+    
+    <h3>3. 直接打开聊天页面</h3>
+    <div class="code-block">
+      <code>&lt;!-- 自动分配 --&gt;<br>
+&lt;a href="https://your-domain.com/chat.html?api_base_url=https://your-api-domain.com" target="_blank"&gt;在线客服&lt;/a&gt;<br><br>
+&lt;!-- 指定客服 --&gt;<br>
+&lt;a href="https://your-domain.com/chat.html?api_base_url=https://your-api-domain.com&admin_id=1" target="_blank"&gt;联系客服1&lt;/a&gt;</code>
+    </div>
+    
+    <h3>演示链接：</h3>
+    <a href="chat.html?api_base_url=http://127.0.0.1:3000" target="_blank" class="demo-button">打开聊天页面（自动分配）</a>
+    <a href="chat.html?api_base_url=http://127.0.0.1:3000&admin_id=1" target="_blank" class="demo-button">打开聊天页面（指定客服1）</a>
+  </div>
+  
+  <div class="example-section">
+    <h2>方式二：使用原生JavaScript SDK</h2>
+    <p>使用提供的 customer-service.js SDK，完全自定义界面。</p>
+    
+    <div class="code-block">
+      <code>&lt;script src="customer-service.js"&gt;&lt;/script&gt;<br>
+&lt;script&gt;<br>
+&nbsp;&nbsp;CustomerService.init({<br>
+&nbsp;&nbsp;&nbsp;&nbsp;apiBaseUrl: 'https://your-api-domain.com',<br>
+&nbsp;&nbsp;&nbsp;&nbsp;adminId: '1', // 可选，指定客服ID；不传则自动分配<br>
+&nbsp;&nbsp;&nbsp;&nbsp;onMessage: function(message) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;console.log('收到消息:', message);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;},<br>
+&nbsp;&nbsp;&nbsp;&nbsp;onConnect: function() {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;console.log('连接成功');<br>
+&nbsp;&nbsp;&nbsp;&nbsp;}<br>
+&nbsp;&nbsp;});<br>
+&nbsp;&nbsp;<br>
+&nbsp;&nbsp;// 发送消息<br>
+&nbsp;&nbsp;CustomerService.sendMessage('你好');<br>
+&lt;/script&gt;</code>
+    </div>
+  </div>
+  
+  <div class="example-section">
+    <h2>方式三：直接调用API</h2>
+    <p>完全自定义实现，直接调用后端API接口。</p>
+    
+    <div class="code-block">
+      <code>// 1. 注册访客<br>
+fetch('https://your-api-domain.com/api/visitor/register', {<br>
+&nbsp;&nbsp;method: 'POST',<br>
+&nbsp;&nbsp;headers: {'Content-Type': 'application/x-www-form-urlencoded'},<br>
+&nbsp;&nbsp;body: 'visitor_id=visitor123'<br>
+})<br>
+.then(res => res.json())<br>
+.then(data => {<br>
+&nbsp;&nbsp;// 2. 创建会话（自动分配或指定客服）<br>
+&nbsp;&nbsp;return fetch('https://your-api-domain.com/api/visitor/conversations', {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;method: 'POST',<br>
+&nbsp;&nbsp;&nbsp;&nbsp;headers: {'Content-Type': 'application/x-www-form-urlencoded'},<br>
+&nbsp;&nbsp;&nbsp;&nbsp;body: 'visitor_id=visitor123&admin_id=1' // admin_id可选<br>
+&nbsp;&nbsp;});<br>
+})<br>
+.then(res => res.json())<br>
+.then(data => {<br>
+&nbsp;&nbsp;console.log('会话创建成功:', data);<br>
+});</code>
+    </div>
+  </div>
+  
+  <div class="example-section">
+    <h2>URL参数说明</h2>
+    <ul>
+      <li><strong>api_base_url</strong>: API服务器地址（必填）</li>
+      <li><strong>admin_id</strong>: 指定客服ID（可选，不传则自动分配最闲的客服）</li>
+      <li><strong>visitor_id</strong>: 访客ID（可选，不传则自动生成）</li>
+      <li><strong>conversation_id</strong>: 会话ID（可选，用于继续之前的会话）</li>
+      <li><strong>position</strong>: 按钮位置（可选，bottom-right/bottom-left/top-right/top-left）</li>
+    </ul>
+  </div>
+  
+  <div class="example-section">
+    <h2>响应式设计</h2>
+    <p>聊天窗口和按钮组件已自动适配PC和移动端：</p>
+    <ul>
+      <li>PC端：固定宽度800px，居中显示</li>
+      <li>移动端：全屏显示，优化触摸操作</li>
+      <li>自动检测设备类型，调整UI布局</li>
+    </ul>
+  </div>
+</body>
+</html>
+

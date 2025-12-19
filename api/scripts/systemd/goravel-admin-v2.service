@@ -1,0 +1,35 @@
+[Unit]
+Description=Goravel Admin Application (v2 - Port 3001)
+After=network.target mysql.service
+Requires=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/www/goravel-admin/v2
+ExecStart=/www/goravel-admin/v2/main
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=goravel-admin-v2
+
+# 优雅关闭配置
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# 安全设置
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/www/goravel-admin/v2/storage
+
+# 资源限制
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+

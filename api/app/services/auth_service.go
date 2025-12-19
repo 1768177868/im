@@ -1,0 +1,366 @@
+package services
+
+import (
+	"context"
+	"time"
+
+	"github.com/goravel/framework/contracts/http"
+	"github.com/goravel/framework/facades"
+	"github.com/goravel/framework/support/str"
+	"github.com/spf13/cast"
+
+	"goravel/app/errors"
+	"goravel/app/http/helpers"
+	"goravel/app/http/trans"
+	"goravel/app/models"
+	"goravel/app/utils"
+	"goravel/app/utils/errorlog"
+	"goravel/app/utils/logger"
+)
+
+type AuthService interface {
+	// Login 管理员登录
+	Login(ctx http.Context, username, password string) (*models.Admin, string, error)
+	// GetAdminInfo 获取管理员完整信息（包括权限和菜单）
+	GetAdminInfo(ctx http.Context) (*models.Admin, []models.Permission, []models.Menu, error)
+	// RecordLoginLog 记录登录日志
+	RecordLoginLog(ctx http.Context, adminID uint, username string, status uint8, message string) error
+}
+
+type AuthServiceImpl struct {
+	adminService AdminService
+	tokenService TokenService
+}
+
+func NewAuthServiceImpl(adminService AdminService, tokenService TokenService) *AuthServiceImpl {
+	return &AuthServiceImpl{
+		adminService: adminService,
+		tokenService: tokenService,
+	}
+}
+
+// Login 管理员登录
+//
+// 参数:
+//   - ctx: HTTP 上下文
+//   - username: 用户名
+//   - password: 密码
+//
+// 返回:
+//   - *models.Admin: 管理员对象
+//   - string: JWT token
+//   - error: 错误信息
+func (s *AuthServiceImpl) Login(ctx http.Context, username, password string) (*models.Admin, string, error) {
+	var admin models.Admin
+	if err := facades.Orm().Query().Where("username", username).First(&admin); err != nil {
+		return nil, "", err
+	}
+
+	if admin.Status == 0 {
+		return nil, "", errors.ErrAccountDisabled
+	}
+
+	// 验证密码
+	if !facades.Hash().Check(password, admin.Password) {
+		// 记录登录失败日志
+		s.RecordLoginLog(ctx, 0, username, 0, trans.Get(ctx, "password_error"))
+		return nil, "", errors.ErrPasswordError
+	}
+
+	// 生成token并存入数据库（类似Laravel Sanctum）
+	// 按配置的过期时间生成token，如果需要永久token，可以在创建token时设置 expiresAt 为 nil
+	var expiresAt *time.Time
+	ttl := facades.Config().GetInt("jwt.ttl", 60) // 默认60分钟
+	if ttl > 0 {
+		// 如果配置了过期时间，设置过期时间
+		exp := time.Now().Add(time.Duration(ttl) * time.Minute)
+		expiresAt = &exp
+	}
+	// 如果 ttl 为 0 或负数，expiresAt 为 nil，表示永不过期
+
+	// 获取浏览器和操作系统信息
+	browser, os := helpers.GetBrowserAndOS(ctx)
+	// 获取真实IP地址
+	ip := helpers.GetRealIP(ctx)
+	// sessionID将在CreateToken中自动生成
+
+	// 生成token
+	plainToken, _, err := s.tokenService.CreateToken("admin", admin.ID, "admin-token", expiresAt, browser, ip, os, "")
+	if err != nil {
+		return nil, "", err
+	}
+	token := plainToken
+
+	// 更新最后登录时间（ORM会自动更新UpdatedAt）
+	facades.Orm().Query().Save(&admin)
+
+	// 记录登录成功日志
+	s.RecordLoginLog(ctx, admin.ID, username, 1, trans.Get(ctx, "login_success"))
+
+	return &admin, token, nil
+}
+
+// GetAdminInfo 获取管理员完整信息（包括权限和菜单）
+//
+// 参数:
+//   - ctx: HTTP 上下文
+//
+// 返回:
+//   - *models.Admin: 管理员对象
+//   - []models.Permission: 权限列表
+//   - []models.Menu: 菜单列表
+//   - error: 错误信息
+func (s *AuthServiceImpl) GetAdminInfo(ctx http.Context) (*models.Admin, []models.Permission, []models.Menu, error) {
+	// 从context中获取admin信息（由JWT中间件设置）
+	adminValue := ctx.Value("admin")
+	if adminValue == nil {
+		logger.ErrorfHTTP(ctx, "GetAdminInfo: admin value is nil in context")
+		return nil, nil, nil, errors.ErrNotLoggedIn
+	}
+
+	var admin models.Admin
+	// 尝试值类型
+	if adminVal, ok := adminValue.(models.Admin); ok {
+		admin = adminVal
+	} else if adminPtr, ok := adminValue.(*models.Admin); ok {
+		// 尝试指针类型
+		if adminPtr == nil {
+			logger.ErrorfHTTP(ctx, "GetAdminInfo: admin pointer is nil")
+			return nil, nil, nil, errors.ErrNotLoggedIn
+		}
+		admin = *adminPtr
+	} else {
+		logger.ErrorfHTTP(ctx, "GetAdminInfo: admin value type assertion failed, type: %T, value: %+v", adminValue, adminValue)
+		return nil, nil, nil, errors.ErrNotLoggedIn
+	}
+
+	// facades.Log().Debugf("GetAdminInfo: admin found, ID: %d, Username: %s", admin.ID, admin.Username)
+
+	// 重新查询admin并加载关联（避免使用已存在的admin对象，可能导致关联加载问题）
+	var adminWithRelations models.Admin
+	if err := facades.Orm().Query().With("Department").With("Roles").Where("id", admin.ID).First(&adminWithRelations); err != nil {
+		errorlog.RecordHTTP(ctx, "auth", "Failed to load admin with relations", map[string]any{
+			"error":    err.Error(),
+			"admin_id": admin.ID,
+		}, "GetAdminInfo: failed to load admin with relations, error: %v", err)
+		return nil, nil, nil, err
+	}
+	admin = adminWithRelations
+
+	// 批量加载所有角色的权限和菜单，避免 N+1 查询
+	if len(admin.Roles) > 0 {
+		var roleIDs []uint
+		for _, role := range admin.Roles {
+			roleIDs = append(roleIDs, role.ID)
+		}
+
+		// 批量加载权限
+		type RolePermission struct {
+			RoleID       uint `gorm:"column:role_id"`
+			PermissionID uint `gorm:"column:permission_id"`
+		}
+		var rolePermissions []RolePermission
+		if err := facades.Orm().Query().Table("role_permission").Where("role_id IN ?", roleIDs).Find(&rolePermissions); err == nil {
+			var permissionIDs []uint
+			rolePermissionMap := make(map[uint][]uint)
+			for _, rp := range rolePermissions {
+				rolePermissionMap[rp.RoleID] = append(rolePermissionMap[rp.RoleID], rp.PermissionID)
+				permissionIDs = append(permissionIDs, rp.PermissionID)
+			}
+			if len(permissionIDs) > 0 {
+				var permissions []models.Permission
+				if err := facades.Orm().Query().Where("id IN ?", permissionIDs).Find(&permissions); err == nil {
+					permissionMap := make(map[uint]models.Permission)
+					for _, perm := range permissions {
+						permissionMap[perm.ID] = perm
+					}
+					for i := range admin.Roles {
+						if permIDs, ok := rolePermissionMap[admin.Roles[i].ID]; ok {
+							for _, permID := range permIDs {
+								if perm, ok := permissionMap[permID]; ok {
+									admin.Roles[i].Permissions = append(admin.Roles[i].Permissions, perm)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// 批量加载菜单
+		type RoleMenu struct {
+			RoleID uint `gorm:"column:role_id"`
+			MenuID uint `gorm:"column:menu_id"`
+		}
+		var roleMenus []RoleMenu
+		if err := facades.Orm().Query().Table("role_menu").Where("role_id IN ?", roleIDs).Find(&roleMenus); err == nil {
+			var menuIDs []uint
+			roleMenuMap := make(map[uint][]uint)
+			for _, rm := range roleMenus {
+				roleMenuMap[rm.RoleID] = append(roleMenuMap[rm.RoleID], rm.MenuID)
+				menuIDs = append(menuIDs, rm.MenuID)
+			}
+			if len(menuIDs) > 0 {
+				var menus []models.Menu
+				if err := facades.Orm().Query().Where("id IN ?", menuIDs).Find(&menus); err == nil {
+					menuMap := make(map[uint]models.Menu)
+					for _, menu := range menus {
+						menuMap[menu.ID] = menu
+					}
+					for i := range admin.Roles {
+						if mIDs, ok := roleMenuMap[admin.Roles[i].ID]; ok {
+							for _, menuID := range mIDs {
+								if menu, ok := menuMap[menuID]; ok {
+									admin.Roles[i].Menus = append(admin.Roles[i].Menus, menu)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 检查是否是超级管理员
+	const SuperAdminRoleSlug = "super-admin"
+	isSuperAdmin := false
+	for _, role := range admin.Roles {
+		if role.Slug == SuperAdminRoleSlug && role.Status == 1 {
+			isSuperAdmin = true
+			break
+		}
+	}
+
+	// 收集所有角色的权限和菜单（去重）
+	permissionMap := make(map[uint]models.Permission)
+	menuMap := make(map[uint]models.Menu)
+
+	for _, role := range admin.Roles {
+		for _, perm := range role.Permissions {
+			permissionMap[perm.ID] = perm
+		}
+		for _, menu := range role.Menus {
+			menuMap[menu.ID] = menu
+		}
+	}
+
+	// 如果是超级管理员，返回所有菜单（用于前端显示）
+	// 但不需要返回所有权限，因为权限检查在中间件中会跳过
+	if isSuperAdmin {
+		var allMenus []models.Menu
+		if err := facades.Orm().Query().Where("status", 1).Order("sort ASC").Find(&allMenus); err == nil {
+			for _, menu := range allMenus {
+				menuMap[menu.ID] = menu
+			}
+		}
+	}
+
+	// 转换为切片
+	var permissions []models.Permission
+	var menus []models.Menu
+	for _, perm := range permissionMap {
+		permissions = append(permissions, perm)
+	}
+	for _, menu := range menuMap {
+		menus = append(menus, menu)
+	}
+
+	// 检查是否需要隐藏服务监控菜单
+	// 只有当配置值不为空且不等于 "0" 时才隐藏（"0" 表示不隐藏）
+	monitorHidden := facades.Config().GetString("admin.monitor_hidden", "")
+	if monitorHidden != "" && monitorHidden != "0" {
+		// 检查是否是开发者管理员
+		developerIDsStr := facades.Config().GetString("admin.developer_ids", "2")
+		isDeveloperAdmin := s.isDeveloperAdmin(admin.ID, developerIDsStr)
+
+		// 如果不是开发者管理员，则过滤掉服务监控菜单
+		if !isDeveloperAdmin {
+			var filteredMenus []models.Menu
+			for _, menu := range menus {
+				if menu.Slug != "monitor" {
+					filteredMenus = append(filteredMenus, menu)
+				}
+			}
+			menus = filteredMenus
+		}
+	}
+
+	return &admin, permissions, menus, nil
+}
+
+// RecordLoginLog 记录登录日志
+func (s *AuthServiceImpl) RecordLoginLog(ctx http.Context, adminID uint, username string, status uint8, message string) error {
+	ip := ctx.Request().Ip()
+
+	// 先创建登录日志记录（Location 字段先为空，避免阻塞登录流程）
+	loginLog := models.LoginLog{
+		AdminID:   adminID,
+		Username:  username,
+		IP:        ip,
+		UserAgent: ctx.Request().Header("User-Agent", ""),
+		Location:  "", // 先为空，异步更新
+		Status:    status,
+		Message:   message,
+	}
+
+	if err := facades.Orm().Query().Create(&loginLog); err != nil {
+		return err
+	}
+
+	// 异步查询 IP 地理位置信息并更新日志记录
+	// 这样不会阻塞登录流程
+	go func() {
+		// 添加 panic 恢复机制
+		defer func() {
+			if r := recover(); r != nil {
+				facades.Log().Errorf("Recovered from panic in IP location update: %v", r)
+			}
+		}()
+
+		// 添加上下文超时控制（5秒超时）
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		location := utils.GetIPLocation(ip)
+		if location != "" {
+			// 更新登录日志的 Location 字段
+			if _, err := facades.Orm().Query().
+				Model(&models.LoginLog{}).
+				Where("id", loginLog.ID).
+				Update("location", location); err != nil {
+				facades.Log().Errorf("Failed to update login log location: %v", err)
+			}
+		}
+
+		// 检查上下文是否超时
+		select {
+		case <-ctx.Done():
+			if ctx.Err() == context.DeadlineExceeded {
+				facades.Log().Errorf("IP location update timeout for login log ID: %d", loginLog.ID)
+			}
+		default:
+		}
+	}()
+
+	return nil
+}
+
+// isDeveloperAdmin 检查是否是开发者管理员
+func (s *AuthServiceImpl) isDeveloperAdmin(adminID uint, developerIDsStr string) bool {
+	if developerIDsStr == "" {
+		return false
+	}
+
+	// 解析开发者ID列表
+	parts := str.Of(developerIDsStr).Split(",")
+	for _, part := range parts {
+		part = str.Of(part).Trim().String()
+		if !str.Of(part).IsEmpty() {
+			if id := cast.ToUint(part); id > 0 && id == adminID {
+				return true
+			}
+		}
+	}
+
+	return false
+}
