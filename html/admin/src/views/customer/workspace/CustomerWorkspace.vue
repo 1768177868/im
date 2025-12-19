@@ -67,7 +67,7 @@
               <span class="conv-time">{{ formatRelativeTime(conv.last_message_at) }}</span>
             </div>
             <div class="conv-preview">
-              <span class="last-message">{{ conv.last_message || conv.title || '暂无消息' }}</span>
+              <span class="last-message">{{ conv.title || '暂无消息' }}</span>
               <el-tag v-if="conv.status === 1" type="success" size="small">进行中</el-tag>
               <el-tag v-else-if="conv.status === 2" type="info" size="small">已结束</el-tag>
             </div>

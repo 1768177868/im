@@ -21,6 +21,5 @@ type Conversation struct {
 	StartedAt     *time.Time `gorm:"comment:开始时间" json:"started_at"`
 	EndedAt       *time.Time `gorm:"comment:结束时间" json:"ended_at"`
 	LastMessageAt *time.Time `gorm:"index;comment:最后消息时间" json:"last_message_at"`
-	LastMessage   string     `gorm:"size:200;comment:最后消息内容" json:"last_message"`
 	Messages      []Message  `gorm:"foreignKey:ConversationID" json:"messages"`
 }
