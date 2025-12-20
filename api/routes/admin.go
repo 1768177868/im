@@ -184,6 +184,7 @@ func Admin() {
 			// 客服管理
 			router.Get("customer/conversations", customerController.GetConversations)
 			router.Get("customer/conversations/{id}", customerController.GetConversationDetail)
+			router.Get("customer/conversations/visitor-status", customerController.GetVisitorStatus)
 			router.Get("customer/messages", customerController.GetMessages)
 			router.Post("customer/messages", customerController.SendMessage)
 			router.Post("customer/conversations/assign", customerController.AssignConversation)

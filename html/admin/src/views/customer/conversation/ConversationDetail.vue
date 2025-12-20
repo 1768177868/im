@@ -240,7 +240,7 @@ import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox, ElIcon } from 'element-plus'
 import { Loading, ArrowDown, Refresh, InfoFilled, Picture, Document } from '@element-plus/icons-vue'
-import { getConversationDetail, getMessages, sendMessage, endConversation, transferConversation, getOnlineAdmins } from '@/api/customer'
+import { getConversationDetail, getMessages, sendMessage, endConversation, transferConversation, getOnlineAdmins, getVisitorStatus } from '@/api/customer'
 import { uploadFile } from '@/api/attachment'
 import ErrorHandler from '@/utils/errorHandler'
 import Storage from '@/utils/storage'
@@ -373,11 +373,15 @@ const loadMessages = async (loadMore = false) => {
         messages.value = newMessages
         currentPage.value = 1
         // 首次加载后滚动到底部
-        scrollToBottom()
-        // 确保状态正确
+        // 使用 nextTick 确保 DOM 更新完成
         nextTick(() => {
-          isAtBottom.value = true
-          showScrollToBottom.value = false
+          scrollToBottom()
+          // 等待图片加载完成后再滚动一次（确保图片加载后高度变化也能滚动到底部）
+          setTimeout(() => {
+            scrollToBottom()
+            isAtBottom.value = true
+            showScrollToBottom.value = false
+          }, 100)
         })
       }
     }
@@ -837,7 +841,13 @@ const getMessageImageUrl = (message) => {
 
 // 图片加载成功
 const handleImageLoad = () => {
-  // 图片加载成功，不需要额外处理
+  // 图片加载成功后，如果用户在底部，自动滚动到底部
+  // 因为图片加载会导致容器高度变化，需要重新滚动
+  if (isAtBottom.value) {
+    nextTick(() => {
+      scrollToBottom()
+    })
+  }
 }
 
 // 图片加载失败
@@ -1046,19 +1056,22 @@ const handleWebSocketMessage = (message) => {
       ElMessage.info(t('customer.conversation.end_success'))
       emit('ended')
     } else if (message.event === 'visitor_status') {
-      // 处理访客状态变更，实时更新
+      // 处理访客状态变更，实时更新（只更新状态标签，不刷新整个会话）
       // 注意：如果访客有 WebSocket 连接，说明是在线的
       // 心跳可能发送 "away"（页面不可见），但只要有连接就应该显示 "online"
       if (message.data?.status) {
         if (message.data.status === 'away') {
-          // 收到 away 状态，重新从后端获取状态（后端会基于 WebSocket 连接判断）
-          // 如果有 WebSocket 连接，后端会返回 online
-          loadConversation()
-        } else if (message.data.status === 'online' || message.data.status === 'offline') {
-          // 收到 online 或 offline 状态，直接更新（这些是确定的状态）
-          visitorStatus.value = message.data.status
+          // 收到 away 状态，通过轻量级 API 获取真实状态（基于 WebSocket 连接判断）
+          // 不刷新整个会话，避免重置滚动位置
+          getVisitorStatus(props.conversationId).then(response => {
+            if (response.code === 200 && response.data?.visitor_online_status) {
+              visitorStatus.value = response.data.visitor_online_status
+            }
+          }).catch(error => {
+            console.error('获取访客状态失败:', error)
+          })
         } else {
-          // 其他状态，直接更新
+          // 收到 online 或 offline 状态，直接更新状态标签
           visitorStatus.value = message.data.status
         }
       }

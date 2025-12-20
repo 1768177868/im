@@ -161,6 +161,35 @@ func (r *CustomerController) GetConversationDetail(ctx apphttp.Context) apphttp.
 	})
 }
 
+// GetVisitorStatus 获取访客在线状态（轻量级接口，不加载整个会话）
+func (r *CustomerController) GetVisitorStatus(ctx apphttp.Context) apphttp.Response {
+	conversationID := cast.ToUint(ctx.Request().Query("conversation_id", ""))
+	if conversationID == 0 {
+		return response.Error(ctx, http.StatusBadRequest, "conversation_id_required")
+	}
+
+	var conversation models.Conversation
+	if err := facades.Orm().Query().
+		Select("id", "visitor_id").
+		Where("id", conversationID).
+		First(&conversation); err != nil {
+		return response.Error(ctx, http.StatusNotFound, "conversation_not_found")
+	}
+
+	// 检查访客是否有活跃的 WebSocket 连接（实时在线状态）
+	visitorOnlineStatus := "offline"
+	if conversation.VisitorID > 0 {
+		isOnline := imhub.Hub().IsVisitorOnline(conversation.VisitorID)
+		if isOnline {
+			visitorOnlineStatus = "online"
+		}
+	}
+
+	return response.Success(ctx, map[string]interface{}{
+		"visitor_online_status": visitorOnlineStatus,
+	})
+}
+
 // GetMessages 获取会话消息
 // 支持两种模式：
 // 1. 传 conversation_id: 获取单个会话的消息（传统分页）

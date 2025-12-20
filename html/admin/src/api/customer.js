@@ -21,6 +21,14 @@ export function getConversationDetail(id) {
   })
 }
 
+export function getVisitorStatus(conversationId) {
+  return request({
+    url: '/customer/conversations/visitor-status',
+    method: 'get',
+    params: { conversation_id: conversationId }
+  })
+}
+
 /**
  * 获取消息列表
  */

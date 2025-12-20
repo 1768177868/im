@@ -1306,7 +1306,13 @@ const getMessageImageUrl = (message) => {
 
 // 图片加载成功
 const handleImageLoad = () => {
-  // 图片加载成功，不需要额外处理
+  // 图片加载成功后，如果用户在底部，自动滚动到底部
+  // 因为图片加载会导致容器高度变化，需要重新滚动
+  if (isAtBottom.value) {
+    nextTick(() => {
+      scrollToBottom()
+    })
+  }
 }
 
 // 图片加载失败
