@@ -21,7 +21,22 @@ cd html/home
 npm install
 ```
 
-### 2. 开发
+### 2. 配置环境变量
+
+复制环境变量示例文件：
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env` 文件，配置 API 地址：
+
+```env
+# API 基础地址
+VITE_API_BASE_URL=http://127.0.0.1:3000
+```
+
+### 3. 开发
 
 ```bash
 npm run dev
@@ -42,7 +57,7 @@ npm run build
 
 ## 接入方式
 
-> http://localhost:3006/chat.html?api_base_url=http://localhost:3008
+> 注意：API 地址现在通过 `.env` 文件配置，不再通过 URL 参数传递
 
 ### 方式一：使用客服按钮（推荐）
 
@@ -50,12 +65,12 @@ npm run build
 
 ```html
 <!-- 自动分配最闲的客服 -->
-<a href="https://your-domain.com/button.html?api_base_url=https://your-api-domain.com" target="_blank">
+<a href="https://your-domain.com/button.html" target="_blank">
   联系客服
 </a>
 
 <!-- 指定客服ID -->
-<a href="https://your-domain.com/button.html?api_base_url=https://your-api-domain.com&admin_id=1" target="_blank">
+<a href="https://your-domain.com/button.html?admin_id=1" target="_blank">
   联系客服1
 </a>
 ```
@@ -64,12 +79,12 @@ npm run build
 
 ```html
 <!-- 自动分配 -->
-<a href="https://your-domain.com/chat.html?api_base_url=https://your-api-domain.com" target="_blank">
+<a href="https://your-domain.com/chat.html" target="_blank">
   在线客服
 </a>
 
 <!-- 指定客服 -->
-<a href="https://your-domain.com/chat.html?api_base_url=https://your-api-domain.com&admin_id=1" target="_blank">
+<a href="https://your-domain.com/chat.html?admin_id=1" target="_blank">
   联系客服1
 </a>
 ```
@@ -78,7 +93,7 @@ npm run build
 
 ```html
 <iframe 
-  src="https://your-domain.com/chat.html?api_base_url=https://your-api-domain.com&admin_id=1"
+  src="https://your-domain.com/chat.html?admin_id=1"
   width="100%"
   height="600px"
   frameborder="0"
@@ -87,7 +102,8 @@ npm run build
 
 ## URL参数
 
-- `api_base_url`: API服务器地址（必填）
+> 注意：`api_base_url` 参数已废弃，现在通过 `.env` 文件配置
+
 - `admin_id`: 指定客服ID（可选，不传则自动分配最闲的客服）
 - `visitor_id`: 访客ID（可选，不传则自动生成）
 - `conversation_id`: 会话ID（可选，用于继续之前的会话）

@@ -168,9 +168,19 @@ func (r *CustomerController) SendMessage(ctx apphttp.Context) apphttp.Response {
 	conversationID := cast.ToUint(ctx.Request().Input("conversation_id", ""))
 	content := ctx.Request().Input("content", "")
 	msgType := ctx.Request().Input("type", "text")
+	fileURL := ctx.Request().Input("file_url", "")
+	fileName := ctx.Request().Input("file_name", "")
+	fileSize := cast.ToInt64(ctx.Request().Input("file_size", "0"))
 
-	if conversationID == 0 || content == "" {
+	// 文本消息必须有内容，文件/图片消息必须有 file_url
+	if conversationID == 0 {
 		return response.Error(ctx, http.StatusBadRequest, "invalid_params")
+	}
+	if msgType == "text" && content == "" {
+		return response.Error(ctx, http.StatusBadRequest, "content_required")
+	}
+	if (msgType == "image" || msgType == "file") && fileURL == "" {
+		return response.Error(ctx, http.StatusBadRequest, "file_url_required")
 	}
 
 	admin := r.currentAdmin(ctx)
@@ -184,9 +194,9 @@ func (r *CustomerController) SendMessage(ctx apphttp.Context) apphttp.Response {
 		admin.ID,
 		content,
 		msgType,
-		"",
-		"",
-		0,
+		fileURL,
+		fileName,
+		fileSize,
 	)
 	if err != nil {
 		return response.Error(ctx, http.StatusInternalServerError, "send_message_failed")
@@ -199,6 +209,9 @@ func (r *CustomerController) SendMessage(ctx apphttp.Context) apphttp.Response {
 		SenderType:     "admin",
 		SenderID:       admin.ID,
 		Content:        content,
+		FileURL:        fileURL,
+		FileName:       fileName,
+		FileSize:       fileSize,
 		Timestamp:      time.Now().Unix(),
 		MessageID:      message.ID,
 	})
@@ -244,6 +257,48 @@ func (r *CustomerController) EndConversation(ctx apphttp.Context) apphttp.Respon
 
 	// 发送系统消息：会话已结束
 	imhub.Hub().BroadcastSystemMessage(conversationID, "ended", nil)
+
+	return response.Success(ctx, nil)
+}
+
+// TransferConversation 转接会话
+func (r *CustomerController) TransferConversation(ctx apphttp.Context) apphttp.Response {
+	conversationID := cast.ToUint(ctx.Request().Input("conversation_id", ""))
+	toAdminID := cast.ToUint(ctx.Request().Input("to_admin_id", ""))
+
+	if conversationID == 0 || toAdminID == 0 {
+		return response.Error(ctx, http.StatusBadRequest, "conversation_id_and_to_admin_id_required")
+	}
+
+	admin := r.currentAdmin(ctx)
+	if admin == nil {
+		return response.Error(ctx, http.StatusUnauthorized, "not_logged_in")
+	}
+
+	if err := r.customerService.TransferConversation(conversationID, admin.ID, toAdminID); err != nil {
+		return response.Error(ctx, http.StatusInternalServerError, "transfer_conversation_failed")
+	}
+
+	return response.Success(ctx, nil)
+}
+
+// RateConversation 评价会话
+func (r *CustomerController) RateConversation(ctx apphttp.Context) apphttp.Response {
+	conversationID := cast.ToUint(ctx.Request().Input("conversation_id", ""))
+	rating := cast.ToUint8(ctx.Request().Input("rating", "0"))
+	ratingNote := ctx.Request().Input("rating_note", "")
+
+	if conversationID == 0 {
+		return response.Error(ctx, http.StatusBadRequest, "conversation_id_required")
+	}
+
+	if rating < 1 || rating > 5 {
+		return response.Error(ctx, http.StatusBadRequest, "invalid_rating")
+	}
+
+	if err := r.customerService.RateConversation(conversationID, rating, ratingNote); err != nil {
+		return response.Error(ctx, http.StatusInternalServerError, "rate_conversation_failed")
+	}
 
 	return response.Success(ctx, nil)
 }

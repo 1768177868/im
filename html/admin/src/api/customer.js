@@ -96,3 +96,25 @@ export function getOnlineAdmins() {
   })
 }
 
+/**
+ * 转接会话
+ */
+export function transferConversation(data) {
+  return request({
+    url: '/customer/conversations/transfer',
+    method: 'post',
+    data
+  })
+}
+
+/**
+ * 评价会话
+ */
+export function rateConversation(data) {
+  return request({
+    url: '/customer/conversations/rate',
+    method: 'post',
+    data
+  })
+}
+

@@ -71,6 +71,39 @@ func GetConfigValueInt(group, key string, defaultValue int) int {
 	return value
 }
 
+// GetConfigValueFloat 从数据库获取配置值（浮点数类型）
+func GetConfigValueFloat(group, key string, defaultValue float64) float64 {
+	// 使用 recover 来捕获可能的 panic（例如在构建时数据库不可用）
+	defer func() {
+		if r := recover(); r != nil {
+			// 静默处理，返回默认值
+		}
+	}()
+
+	// 尝试检查数据库连接是否可用，如果不可用则直接返回默认值
+	orm := facades.Orm()
+	if orm == nil {
+		return defaultValue
+	}
+
+	var config models.Config
+	err := orm.Query().Where("group", group).Where("key", key).First(&config)
+	if err != nil {
+		return defaultValue
+	}
+	if config.Value == "" {
+		return defaultValue
+	}
+
+	// 简单的字符串转浮点数
+	var value float64
+	_, err = fmt.Sscanf(config.Value, "%f", &value)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
 // GetConfigValueBool 从数据库获取配置值（布尔类型）
 func GetConfigValueBool(group, key string, defaultValue bool) bool {
 	// 使用 recover 来捕获可能的 panic（例如在构建时数据库不可用）

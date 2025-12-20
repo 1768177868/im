@@ -23,6 +23,16 @@ func Api() {
 		router.Get("messages/all", visitorController.GetAllMessages)
 		// 发送消息
 		router.Post("messages", visitorController.SendMessage)
+		// 结束会话
+		router.Post("conversations/end", visitorController.EndConversation)
+		// 评价会话
+		router.Post("conversations/rate", visitorController.RateConversation)
+		// 上传图片（公开接口，添加水印）
+		router.Post("upload/image", visitorController.UploadImage)
+		// 预览附件（访客专用，公开接口）
+		router.Get("attachments/{id}/preview", visitorController.PreviewAttachment)
+		// 心跳接口（用于保持会话活跃状态）
+		router.Post("heartbeat", visitorController.Heartbeat)
 		// WebSocket 连接
 		router.Get("ws", visitorController.WebSocket)
 	})

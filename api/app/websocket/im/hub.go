@@ -322,3 +322,19 @@ func (h *IMHub) GetVisitorClients(visitorID uint) []*Client {
 	}
 	return clients
 }
+
+// HasVisitorConnection 检查访客是否有活跃的 WebSocket 连接（针对特定会话）
+func (h *IMHub) HasVisitorConnection(visitorID uint, conversationID uint) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if visitorClients, ok := h.visitorClients[visitorID]; ok {
+		for client := range visitorClients {
+			// 检查连接是否属于该会话
+			if client.ConversationID == conversationID {
+				return true
+			}
+		}
+	}
+	return false
+}

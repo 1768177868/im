@@ -64,7 +64,19 @@
             </el-avatar>
             <div class="message-content">
               <div class="message-bubble" :class="{ 'visitor-bubble': message.sender_type === 'visitor', 'admin-bubble': message.sender_type === 'admin' }">
-                <div class="message-text">{{ message.content }}</div>
+                <!-- 图片消息 -->
+                <div v-if="message.type === 'image' && message.file_url" class="message-image">
+                  <el-image
+                    :src="getMessageImageUrl(message)"
+                    :preview-src-list="[getMessageImageUrl(message)]"
+                    fit="cover"
+                    style="max-width: 200px; max-height: 200px; border-radius: 4px; cursor: pointer;"
+                    @load="handleImageLoad"
+                    @error="handleImageError"
+                  />
+                </div>
+                <!-- 文本消息 -->
+                <div v-if="message.type === 'text'" class="message-text" v-html="renderMessage(message.content)"></div>
                 <div class="message-time">
                   <el-icon v-if="message.is_sending" class="sending-icon"><Loading /></el-icon>
                   {{ formatRelativeTime(message.created_at) }}
@@ -120,16 +132,34 @@
         
         <!-- 正常输入 -->
         <template v-else>
-          <el-input
-            v-model="inputMessage"
-            type="textarea"
-            :rows="isMobile ? 2 : 3"
-            placeholder="请输入消息..."
-            @keydown.enter.exact.prevent="handleSendMessage"
-            @keydown.enter.shift.exact="handleNewLine"
-            :disabled="!isConnected || !conversationId"
-            class="input-textarea"
-          />
+          <div class="input-wrapper">
+            <el-input
+              v-model="inputMessage"
+              type="textarea"
+              :rows="isMobile ? 2 : 3"
+              placeholder="请输入消息..."
+              @keydown.enter.exact.prevent="handleSendMessage"
+              @keydown.enter.shift.exact="handleNewLine"
+              :disabled="!isConnected || !conversationId"
+              class="input-textarea"
+            />
+            <div class="input-toolbar">
+              <el-upload
+                :action="uploadAction"
+                :before-upload="beforeUpload"
+                :on-success="handleUploadSuccess"
+                :on-error="handleUploadError"
+                :show-file-list="false"
+                :multiple="false"
+                accept="image/*"
+              >
+                <template #trigger>
+                  <el-button text circle size="small" :icon="Picture" />
+                </template>
+              </el-upload>
+              <EmojiPicker @select="handleEmojiSelect" />
+            </div>
+          </div>
           <div class="input-actions">
             <el-button 
               type="primary" 
@@ -150,19 +180,68 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { ElMessage, ElIcon } from 'element-plus'
-import { Loading, ArrowDown } from '@element-plus/icons-vue'
+import { Loading, ArrowDown, Picture } from '@element-plus/icons-vue'
 import axios from 'axios'
+import EmojiPicker from './EmojiPicker.vue'
+
+// 简单的 i18n 对象
+const i18n = {
+  'zh-CN': {
+    customerService: '客服',
+    loading: '加载中...',
+    loadMore: '加载更多历史消息',
+    noMessages: '暂无消息',
+    newMessages: '条新消息',
+    adminConnected: (name) => `客服 ${name || ''} 已接入`,
+    conversationResumed: (name) => `会话已恢复，客服 ${name || ''} 为您服务`,
+    conversationEnded: '会话已结束',
+    send: '发送',
+    inputPlaceholder: '请输入消息...',
+    visitor: '访客',
+    visitorChar: '访',
+    adminChar: '客'
+  },
+  'en-US': {
+    customerService: 'Customer Service',
+    loading: 'Loading...',
+    loadMore: 'Load More History',
+    noMessages: 'No messages',
+    newMessages: 'new messages',
+    adminConnected: (name) => `Customer service ${name || ''} has joined`,
+    conversationResumed: (name) => `Conversation resumed, ${name || ''} is serving you`,
+    conversationEnded: 'Conversation ended',
+    send: 'Send',
+    inputPlaceholder: 'Please enter a message...',
+    visitor: 'Visitor',
+    visitorChar: 'V',
+    adminChar: 'C',
+    onlyImageAllowed: 'Only image files are allowed',
+    uploadFailed: 'Upload failed'
+  }
+}
+
+// 从 URL 参数获取语言
+function getLanguage() {
+  const urlParams = new URLSearchParams(window.location.search)
+  const lang = urlParams.get('lang') || urlParams.get('language') || 'zh-CN'
+  return lang.toLowerCase() === 'en' || lang.toLowerCase() === 'en-us' ? 'en-US' : 'zh-CN'
+}
+
+const currentLang = getLanguage()
+const t = (key, ...args) => {
+  const translations = i18n[currentLang] || i18n['zh-CN']
+  const value = translations[key]
+  return typeof value === 'function' ? value(...args) : value
+}
 
 // Props
 const props = defineProps({
   apiBaseUrl: {
     type: String,
     default: () => {
-      // 如果没有通过 props 传递，尝试从环境变量或 URL 参数获取
-      const urlParams = new URLSearchParams(window.location.search)
-      return urlParams.get('api_base_url') || 
+      // 优先使用环境变量配置（.env 文件），不再从 URL 参数获取
+      return import.meta.env.VITE_API_BASE_URL || 
              window.CUSTOMER_SERVICE_API_URL || 
-             import.meta.env.VITE_API_BASE_URL ||
              'http://127.0.0.1:3000'
     }
   },
@@ -177,6 +256,10 @@ const props = defineProps({
   conversationId: {
     type: String,
     default: ''
+  },
+  language: {
+    type: String,
+    default: 'zh-CN'
   }
 })
 
@@ -205,7 +288,16 @@ const unreadCount = ref(0) // 未读新消息数量
 const reconnectCount = ref(0) // 重连次数
 const isReconnecting = ref(false) // 是否正在重连
 const maxReconnectAttempts = 10 // 最大重连次数
+const heartbeatInterval = ref(null) // 心跳定时器
+const heartbeatIntervalTime = 30000 // 心跳间隔：30秒
 let audioContext = null // 音频上下文
+const uploadingFile = ref(null) // 正在上传的文件
+const imageUrlMap = ref(new Map()) // 图片URL缓存（message_id -> blob URL）
+
+// 计算上传地址（使用访客专用的上传接口，会自动添加水印）
+const uploadAction = computed(() => {
+  return `${props.apiBaseUrl}/api/visitor/upload/image`
+})
 
 // 连接状态文本
 const connectionStatusText = computed(() => {
@@ -267,9 +359,74 @@ onMounted(async () => {
   })
 })
 
+// 结束会话
+async function endConversation() {
+  if (!conversationId.value || isConversationEnded.value) {
+    return
+  }
+  
+  try {
+    await axios.post(`${props.apiBaseUrl}/api/visitor/conversations/end`, {
+      visitor_id: visitorId.value,
+      conversation_id: conversationId.value
+    }, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      transformRequest: [(data) => {
+        let params = new URLSearchParams()
+        for (let key in data) {
+          params.append(key, data[key])
+        }
+        return params.toString()
+      }]
+    })
+    
+    isConversationEnded.value = true
+    localStorage.removeItem('customer_service_conversation_id')
+  } catch (error) {
+    // 静默失败，不显示错误提示（因为可能是页面关闭导致的）
+    console.log('结束会话失败:', error)
+  }
+}
+
 onUnmounted(() => {
-  if (ws.value) {
-    ws.value.close()
+  // 清理资源
+  stopHeartbeat() // 停止心跳
+  disconnectWebSocket() // 断开WebSocket
+  
+  // 清理所有 blob URL，避免内存泄漏
+  imageUrlMap.value.forEach((blobUrl) => {
+    if (blobUrl && blobUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(blobUrl)
+    }
+  })
+  imageUrlMap.value.clear()
+  
+  // 结束会话
+  endConversation()
+})
+
+// 监听页面关闭/离开事件
+window.addEventListener('beforeunload', () => {
+  // 使用 sendBeacon 确保请求能够发送（即使页面正在关闭）
+  if (conversationId.value && !isConversationEnded.value) {
+    const data = new URLSearchParams({
+      visitor_id: visitorId.value,
+      conversation_id: conversationId.value
+    })
+    navigator.sendBeacon(
+      `${props.apiBaseUrl}/api/visitor/conversations/end`,
+      data.toString()
+    )
+  }
+})
+
+// 监听页面隐藏事件（切换标签页等）
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && conversationId.value && !isConversationEnded.value) {
+    // 页面隐藏时，可以选择结束会话或保持连接
+    // 这里我们选择保持连接，只在页面关闭时结束会话
   }
 })
 
@@ -401,6 +558,13 @@ async function loadMessages(loadMore = false) {
           
           messages.value = [...filteredMessages, ...messages.value]
           
+          // 为图片消息加载图片
+          filteredMessages.forEach(msg => {
+            if (msg.type === 'image' && msg.file_url) {
+              loadMessageImage(msg)
+            }
+          })
+          
           // 更新最早消息ID（新加载的消息中第一个是最早的）
           if (filteredMessages.length > 0) {
             oldestMessageId.value = filteredMessages[0].id
@@ -426,6 +590,25 @@ async function loadMessages(loadMore = false) {
         })
         
         messages.value = newMessages
+        
+        // 为图片消息加载图片（统一字段名）
+        newMessages.forEach(msg => {
+          // 统一文件相关字段名（兼容大小写）
+          if (!msg.file_url && msg.FileURL) {
+            msg.file_url = msg.FileURL
+          }
+          if (!msg.file_name && msg.FileName) {
+            msg.file_name = msg.FileName
+          }
+          if (!msg.file_size && msg.FileSize) {
+            msg.file_size = msg.FileSize
+          }
+          
+          if (msg.type === 'image' && msg.file_url) {
+            loadMessageImage(msg)
+          }
+        })
+        
         // 记录最早消息的ID（数组第一个元素是最早的）
         if (newMessages.length > 0) {
           oldestMessageId.value = newMessages[0].id
@@ -493,6 +676,8 @@ function connectWebSocket() {
         ElMessage.success('重新连接成功')
       }
       reconnectCount.value = 0
+      // 启动心跳
+      startHeartbeat()
     }
     
     ws.value.onmessage = (event) => {
@@ -618,7 +803,11 @@ function handleWebSocketMessage(message) {
       // 使用 message_id 作为 id（如果存在）
       id: message.id || message.message_id,
       // 统一时间字段：确保是 ISO 格式的 UTC 时间字符串
-      created_at: createdAt
+      created_at: createdAt,
+      // 统一文件相关字段名（兼容大小写）
+      file_url: message.file_url || message.FileURL || message.fileUrl || '',
+      file_name: message.file_name || message.FileName || message.fileName || '',
+      file_size: message.file_size || message.FileSize || message.fileSize || 0
     }
     
     // 1. 检查消息ID是否已处理
@@ -666,6 +855,11 @@ function handleWebSocketMessage(message) {
     messages.value.push(normalizedMessage)
     if (normalizedMessage.id) {
       processedMessageIds.add(normalizedMessage.id)
+    }
+    
+    // 如果是图片消息，加载图片
+    if (normalizedMessage.type === 'image' && normalizedMessage.file_url) {
+      loadMessageImage(normalizedMessage)
     }
     
     // 播放新消息提示音（只对客服消息播放）
@@ -860,6 +1054,209 @@ function handleScroll() {
   }
 }
 
+// 文件上传前处理
+const beforeUpload = (file) => {
+  // 验证文件类型，只允许图片
+  if (!file.type.startsWith('image/')) {
+    ElMessage.error(t('onlyImageAllowed') || '只能上传图片文件')
+    return false
+  }
+  
+  uploadingFile.value = file
+  
+  // 使用 axios 上传文件
+  const formData = new FormData()
+  formData.append('file', file)
+  
+  axios.post(uploadAction.value, formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  }).then(response => {
+    if (response.data.code === 200) {
+      const attachment = response.data.data || response.data
+      // 发送图片消息
+      handleSendImageMessage(attachment)
+    } else {
+      ElMessage.error(response.data.message || t('uploadFailed') || '上传失败')
+      uploadingFile.value = null
+    }
+  }).catch(error => {
+    console.error('Upload error:', error)
+    ElMessage.error(error.response?.data?.message || error.message || t('uploadFailed') || '上传失败')
+    uploadingFile.value = null
+  })
+  
+  return false // 阻止默认上传
+}
+
+// 处理上传成功
+const handleUploadSuccess = (response) => {
+  // Element Plus 的 on-success 回调，但我们已经用 beforeUpload 处理了
+  uploadingFile.value = null
+}
+
+// 处理上传失败
+const handleUploadError = (error) => {
+  ElMessage.error(t('uploadFailed') || '上传失败')
+  uploadingFile.value = null
+}
+
+// 发送图片消息
+async function handleSendImageMessage(attachment) {
+  if (!attachment) return
+  
+  // 兼容大小写字段名
+  const fileUrl = attachment.file_url || attachment.FileURL || attachment.fileUrl
+  const fileName = attachment.filename || attachment.Filename || attachment.fileName || ''
+  const fileSize = attachment.size || attachment.Size || 0
+  
+  if (!fileUrl) {
+    ElMessage.error(t('uploadFailed') || '上传失败：无法获取文件URL')
+    uploadingFile.value = null
+    return
+  }
+  
+  sending.value = true
+  
+  try {
+    const response = await axios.post(`${props.apiBaseUrl}/api/visitor/messages`, {
+      conversation_id: conversationId.value,
+      visitor_id: visitorId.value,
+      content: '',
+      type: 'image',
+      file_url: fileUrl,
+      file_name: fileName,
+      file_size: fileSize
+    }, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      transformRequest: [(data) => {
+        let params = new URLSearchParams()
+        for (let key in data) {
+          params.append(key, data[key])
+        }
+        return params.toString()
+      }]
+    })
+    
+    if (response.data.code === 200) {
+      if (response.data.data) {
+        const newMessage = response.data.data
+        // 统一文件相关字段名（兼容大小写）
+        if (!newMessage.file_url && newMessage.FileURL) {
+          newMessage.file_url = newMessage.FileURL
+        }
+        if (!newMessage.file_name && newMessage.FileName) {
+          newMessage.file_name = newMessage.FileName
+        }
+        if (!newMessage.file_size && newMessage.FileSize) {
+          newMessage.file_size = newMessage.FileSize
+        }
+        
+        const exists = messages.value.some(m => m.id === newMessage.id)
+        if (!exists) {
+          messages.value.push(newMessage)
+          // 如果是图片消息，加载图片
+          if (newMessage.type === 'image' && newMessage.file_url) {
+            loadMessageImage(newMessage)
+          }
+          scrollToBottom()
+        }
+      } else {
+        await loadMessages()
+      }
+    }
+  } catch (error) {
+    console.error('发送图片消息失败:', error)
+    ElMessage.error('发送失败，请重试')
+  } finally {
+    sending.value = false
+    uploadingFile.value = null
+  }
+}
+
+// 加载消息中的图片并转换为blob URL
+const loadMessageImage = async (message) => {
+  if (!message || message.type !== 'image' || !message.file_url) return
+  
+  const messageId = message.id
+  if (!messageId) return
+  
+  // 如果已经加载过，直接返回
+  if (imageUrlMap.value.has(messageId)) {
+    return
+  }
+  
+  const fileUrl = message.file_url || message.FileURL
+  if (!fileUrl) return
+  
+  // 如果是外部URL（http/https），直接使用
+  if (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')) {
+    imageUrlMap.value.set(messageId, fileUrl)
+    return
+  }
+  
+  // 将 admin 路径转换为 visitor 路径（访客专用接口，不需要认证）
+  let processedUrl = fileUrl
+  if (fileUrl.startsWith('/api/admin/attachments/') && fileUrl.includes('/preview')) {
+    processedUrl = fileUrl.replace('/api/admin/attachments/', '/api/visitor/attachments/')
+  }
+  
+  // 构建完整的URL
+  let fullUrl = processedUrl
+  if (props.apiBaseUrl) {
+    const base = props.apiBaseUrl.replace(/\/+$/, '')
+    fullUrl = `${base}${processedUrl.startsWith('/') ? '' : '/'}${processedUrl}`
+  }
+  
+  // 通过axios获取图片并转换为blob URL
+  // 访客接口不需要认证
+  try {
+    const response = await axios.get(fullUrl, {
+      responseType: 'blob'
+    })
+    const blob = new Blob([response.data])
+    const blobUrl = URL.createObjectURL(blob)
+    imageUrlMap.value.set(messageId, blobUrl)
+  } catch (error) {
+    console.error('Failed to load message image:', error)
+    // 加载失败时设置为原始URL，让浏览器尝试直接加载
+    imageUrlMap.value.set(messageId, fileUrl)
+  }
+}
+
+// 获取消息图片URL
+const getMessageImageUrl = (message) => {
+  if (!message || message.type !== 'image' || !message.file_url) return ''
+  
+  const messageId = message.id
+  if (!messageId) return message.file_url
+  
+  // 从缓存中获取
+  const cachedUrl = imageUrlMap.value.get(messageId)
+  if (cachedUrl) {
+    return cachedUrl
+  }
+  
+  // 如果还没有加载，异步加载
+  loadMessageImage(message)
+  
+  // 返回原始URL作为占位符
+  return message.file_url
+}
+
+// 图片加载成功
+const handleImageLoad = () => {
+  // 图片加载成功，不需要额外处理
+}
+
+// 图片加载失败
+const handleImageError = (event) => {
+  console.error('Image load error:', event)
+}
+
 // 解析时间字符串（数据库存储的是 UTC 时间，需要转换为客户端本地时间）
 function parseTime(timeStr) {
   if (!timeStr) return null
@@ -937,6 +1334,111 @@ function getSystemMessageText(message) {
     return '连接成功'
   }
   return '系统消息'
+}
+
+// 表情映射表
+const emojiMap = {
+  '[微笑]': '😊',
+  '[大笑]': '😃',
+  '[开心]': '😄',
+  '[笑哭]': '😂',
+  '[眨眼]': '😉',
+  '[色]': '😍',
+  '[亲亲]': '😘',
+  '[害羞]': '😳',
+  '[得意]': '😎',
+  '[酷]': '🆒',
+  '[大哭]': '😭',
+  '[流泪]': '😢',
+  '[委屈]': '😞',
+  '[难过]': '😔',
+  '[抓狂]': '😤',
+  '[发怒]': '😠',
+  '[生气]': '😡',
+  '[惊讶]': '😲',
+  '[惊恐]': '😱',
+  '[晕]': '😵',
+  '[困]': '😴',
+  '[思考]': '🤔',
+  '[疑问]': '❓',
+  '[闭嘴]': '🤐',
+  '[嘘]': '🤫',
+  '[鄙视]': '🙄',
+  '[白眼]': '🙄',
+  '[赞]': '👍',
+  '[弱]': '👎',
+  '[握手]': '🤝',
+  '[胜利]': '✌️',
+  '[OK]': '👌',
+  '[爱心]': '❤️',
+  '[玫瑰]': '🌹',
+  '[礼物]': '🎁',
+  '[蛋糕]': '🎂',
+  '[咖啡]': '☕',
+  '[啤酒]': '🍺',
+  '[干杯]': '🥂',
+  '[鼓掌]': '👏',
+  '[加油]': '💪',
+  '[抱拳]': '🙏',
+  '[再见]': '👋',
+  '[好的]': '✅',
+  '[不行]': '❌',
+  '[星星]': '⭐',
+  '[月亮]': '🌙',
+  '[太阳]': '☀️',
+  '[彩虹]': '🌈',
+  '[烟花]': '🎆',
+  '[庆祝]': '🎉',
+  '[红包]': '🧧',
+  '[钱]': '💰',
+  '[飞机]': '✈️',
+  '[汽车]': '🚗',
+  '[火车]': '🚂',
+  '[轮船]': '🚢',
+  '[自行车]': '🚲',
+  '[电话]': '📞',
+  '[邮件]': '📧',
+  '[电脑]': '💻',
+  '[手机]': '📱',
+  '[音乐]': '🎵',
+  '[电影]': '🎬',
+  '[游戏]': '🎮',
+  '[足球]': '⚽',
+  '[篮球]': '🏀',
+  '[乒乓球]': '🏓',
+}
+
+// 渲染消息内容，将表情代码转换为 emoji
+function renderMessage(content) {
+  if (!content) return ''
+  
+  // 转义 HTML 特殊字符
+  let html = content
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+  
+  // 将表情代码替换为 emoji
+  for (const [code, emoji] of Object.entries(emojiMap)) {
+    const regex = new RegExp(code.replace(/[\[\]]/g, '\\$&'), 'g')
+    html = html.replace(regex, `<span class="emoji">${emoji}</span>`)
+  }
+  
+  // 将换行符转换为 <br>
+  html = html.replace(/\n/g, '<br>')
+  
+  return html
+}
+
+// 处理表情选择
+function handleEmojiSelect(emojiCode) {
+  if (!inputMessage.value) {
+    inputMessage.value = emojiCode
+  } else {
+    inputMessage.value += emojiCode
+  }
 }
 
 // 关闭窗口
@@ -1171,6 +1673,14 @@ watch(messages, () => {
   margin-bottom: 4px;
 }
 
+.message-text :deep(.emoji) {
+  display: inline-block;
+  font-size: 1.2em;
+  line-height: 1;
+  vertical-align: middle;
+  margin: 0 2px;
+}
+
 .message-time {
   font-size: 12px;
   opacity: 0.7;
@@ -1199,8 +1709,22 @@ watch(messages, () => {
   background: #fff;
 }
 
+.input-wrapper {
+  position: relative;
+}
+
 .input-textarea {
   margin-bottom: 10px;
+}
+
+.input-toolbar {
+  position: absolute;
+  bottom: 15px;
+  left: 5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 10;
 }
 
 .input-actions {

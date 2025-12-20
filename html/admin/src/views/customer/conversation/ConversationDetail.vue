@@ -9,11 +9,11 @@
       <div class="chat-toolbar">
         <div class="visitor-info">
           <el-avatar :size="36">
-            {{ (conversation?.visitor?.name || conversation?.visitor?.visitor_id || '访')?.charAt(0) }}
+            {{ (conversation?.visitor?.name || conversation?.visitor?.visitor_id || t('customer.conversation.visitor_char'))?.charAt(0) }}
           </el-avatar>
           <div class="visitor-meta">
             <span class="visitor-name">
-              {{ conversation?.visitor?.name || conversation?.visitor?.visitor_id || `访客${conversation?.visitor_id}` }}
+              {{ conversation?.visitor?.name || conversation?.visitor?.visitor_id || `${t('customer.conversation.visitor_prefix')}${conversation?.visitor_id}` }}
             </span>
             <el-tag v-if="conversation?.status" :type="getStatusType(conversation.status)" size="small">
               {{ getStatusText(conversation.status) }}
@@ -51,12 +51,28 @@
           </el-popover>
           <el-button 
             v-if="conversation?.status === 1"
+            type="warning" 
+            size="small"
+            @click="showTransferDialog = true"
+          >
+            {{ $t('customer.conversation.transfer') }}
+          </el-button>
+          <el-button 
+            v-if="conversation?.status === 1"
             type="danger" 
             size="small"
             @click="handleEndConversation"
             :loading="ending"
           >
             {{ $t('customer.conversation.end') }}
+          </el-button>
+          <el-button 
+            v-if="conversation?.status === 2 && !conversation?.rating"
+            type="primary" 
+            size="small"
+            @click="showRateDialog = true"
+          >
+            {{ $t('customer.conversation.rate') }}
           </el-button>
         </div>
       </div>
@@ -74,7 +90,7 @@
               @click="loadMoreMessages"
               size="small"
             >
-              {{ loadingMore ? '加载中...' : '加载更多历史消息' }}
+              {{ loadingMore ? $t('customer.conversation.loading') : $t('customer.conversation.loading_more') }}
             </el-button>
           </div>
           
@@ -92,11 +108,31 @@
               :size="32" 
               :src="conversation?.admin?.avatar"
             >
-              {{ conversation?.admin?.nickname?.charAt(0) || '客' }}
+              {{ conversation?.admin?.nickname?.charAt(0) || $t('customer.conversation.admin_char') }}
             </el-avatar>
             <div class="message-content">
               <div class="message-bubble" :class="{ 'visitor-bubble': message.sender_type === 'visitor', 'admin-bubble': message.sender_type === 'admin' }">
-                <div class="message-text">{{ message.content }}</div>
+                <!-- 图片消息 -->
+                <div v-if="message.type === 'image' && message.file_url" class="message-image">
+                  <el-image
+                    :src="getMessageImageUrl(message)"
+                    :preview-src-list="[getMessageImageUrl(message)]"
+                    fit="cover"
+                    style="max-width: 200px; max-height: 200px; border-radius: 4px; cursor: pointer;"
+                    @load="handleImageLoad"
+                    @error="handleImageError"
+                  />
+                </div>
+                <!-- 文件消息 -->
+                <div v-else-if="message.type === 'file' && message.file_url" class="message-file">
+                  <el-link :href="message.file_url" :underline="false" target="_blank">
+                    <el-icon><Document /></el-icon>
+                    {{ message.file_name || $t('customer.conversation.file') }}
+                    <span v-if="message.file_size" class="file-size">({{ formatFileSize(message.file_size) }})</span>
+                  </el-link>
+                </div>
+                <!-- 文本消息 -->
+                <div v-if="message.type === 'text'" class="message-text" v-html="renderMessage(message.content)"></div>
                 <div class="message-time">
                   <el-icon v-if="message.is_sending" class="sending-icon"><Loading /></el-icon>
                   {{ formatTime(message.created_at) }}
@@ -107,7 +143,7 @@
               v-if="message.sender_type === 'visitor'"
               :size="32" 
             >
-              {{ conversation?.visitor?.name?.charAt(0) || '访' }}
+              {{ conversation?.visitor?.name?.charAt(0) || $t('customer.conversation.visitor_char') }}
             </el-avatar>
           </div>
           </div>
@@ -126,26 +162,45 @@
                 size="small"
               />
             </el-badge>
-            <span v-if="unreadCount > 0" class="unread-text">{{ unreadCount }}条新消息</span>
+            <span v-if="unreadCount > 0" class="unread-text">{{ unreadCount }}{{ $t('customer.conversation.new_messages') }}</span>
           </div>
         </div>
       </div>
 
       <!-- 发送消息 -->
       <div class="send-message-section" v-if="conversation?.status === 1">
-        <el-input
-          v-model="inputMessage"
-          type="textarea"
-          :rows="3"
-          :placeholder="$t('customer.conversation.input_placeholder')"
-          @keydown.enter.exact.prevent="handleSendMessage"
-          @keydown.enter.shift.exact="handleNewLine"
-        />
+        <div class="input-wrapper">
+          <el-input
+            v-model="inputMessage"
+            type="textarea"
+            :rows="3"
+            :placeholder="$t('customer.conversation.input_placeholder')"
+            @keydown.enter.exact.prevent="handleSendMessage"
+            @keydown.enter.shift.exact="handleNewLine"
+          />
+          <div class="input-toolbar">
+            <el-upload
+              :action="uploadAction"
+              :headers="uploadHeaders"
+              :before-upload="beforeUpload"
+              :on-success="handleUploadSuccess"
+              :on-error="handleUploadError"
+              :show-file-list="false"
+              :multiple="false"
+              accept="image/*"
+            >
+              <template #trigger>
+                <el-button text circle size="small" :icon="Picture" />
+              </template>
+            </el-upload>
+            <EmojiPicker @select="handleEmojiSelect" />
+          </div>
+        </div>
         <div class="send-actions">
           <el-button 
             type="primary" 
             @click="handleSendMessage"
-            :disabled="!inputMessage.trim() || sending"
+            :disabled="(!inputMessage.trim() && !uploadingFile) || sending"
             :loading="sending"
           >
             {{ $t('common.send') }}
@@ -154,17 +209,61 @@
       </div>
     </div>
   </div>
+
+  <!-- 转接会话对话框 -->
+  <el-dialog v-model="showTransferDialog" :title="$t('customer.conversation.transfer_title')" width="400px">
+    <el-form :model="transferForm" label-width="80px">
+      <el-form-item :label="$t('customer.conversation.transfer_to')">
+        <el-select v-model="transferForm.to_admin_id" :placeholder="$t('customer.conversation.transfer_select_admin')" filterable>
+          <el-option
+            v-for="admin in onlineAdmins"
+            :key="admin.id"
+            :label="admin.nickname || admin.username"
+            :value="admin.id"
+          />
+        </el-select>
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="showTransferDialog = false">{{ $t('common.cancel') }}</el-button>
+      <el-button type="primary" @click="handleTransferConversation" :loading="transferring">{{ $t('common.confirm') }}</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 评价会话对话框 -->
+  <el-dialog v-model="showRateDialog" :title="$t('customer.conversation.rate_title')" width="400px">
+    <el-form :model="rateForm" label-width="80px">
+      <el-form-item :label="$t('customer.conversation.rate_label')">
+        <el-rate v-model="rateForm.rating" :max="5" />
+      </el-form-item>
+      <el-form-item :label="$t('customer.conversation.rate_note')">
+        <el-input
+          v-model="rateForm.rating_note"
+          type="textarea"
+          :rows="3"
+          :placeholder="$t('customer.conversation.rate_note_placeholder')"
+        />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="showRateDialog = false">{{ $t('common.cancel') }}</el-button>
+      <el-button type="primary" @click="handleRateConversation" :loading="rating" :disabled="!rateForm.rating">{{ $t('common.confirm') }}</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox, ElIcon } from 'element-plus'
-import { Loading, ArrowDown, Refresh, InfoFilled } from '@element-plus/icons-vue'
-import { getConversationDetail, getMessages, sendMessage, endConversation } from '@/api/customer'
+import { Loading, ArrowDown, Refresh, InfoFilled, Picture, Document } from '@element-plus/icons-vue'
+import { getConversationDetail, getMessages, sendMessage, endConversation, transferConversation, rateConversation, getOnlineAdmins } from '@/api/customer'
+import { uploadFile } from '@/api/attachment'
 import ErrorHandler from '@/utils/errorHandler'
 import Storage from '@/utils/storage'
+import axios from 'axios'
 import { useUserStore } from '@/store/user'
+import EmojiPicker from '@/components/EmojiPicker.vue'
 
 const props = defineProps({
   conversationId: {
@@ -195,6 +294,17 @@ const unreadCount = ref(0) // 未读新消息数量
 const ending = ref(false) // 结束会话中
 const ws = ref(null) // WebSocket 连接
 const wsConnected = ref(false) // WebSocket 连接状态
+const showTransferDialog = ref(false) // 转接对话框
+const showRateDialog = ref(false) // 评价对话框
+const transferring = ref(false) // 转接中
+const rating = ref(false) // 评价中
+const onlineAdmins = ref([]) // 在线客服列表
+const transferForm = ref({ to_admin_id: null }) // 转接表单
+const rateForm = ref({ rating: 0, rating_note: '' }) // 评价表单
+const uploadingFile = ref(null) // 正在上传的文件
+const uploadAction = ref('/api/admin/attachments/upload') // 上传地址
+const uploadHeaders = ref({}) // 上传请求头
+const imageUrlMap = ref(new Map()) // 图片URL缓存（message_id -> blob URL）
 
 // 获取会话详情
 const loadConversation = async () => {
@@ -235,6 +345,13 @@ const loadMessages = async (loadMore = false) => {
       const data = response.data
       const newMessages = data.messages || []
       totalMessages.value = data.total || 0
+      
+      // 为图片消息加载图片
+      newMessages.forEach(msg => {
+        if (msg.type === 'image' && msg.file_url) {
+          loadMessageImage(msg)
+        }
+      })
       
       // 判断是否还有更多消息（当前已加载的消息数小于总数）
       hasMoreMessages.value = messages.value.length + newMessages.length < totalMessages.value
@@ -443,6 +560,370 @@ const getStatusText = (status) => {
   return statusMap[status] || '-'
 }
 
+// 表情映射表
+const emojiMap = {
+  '[微笑]': '😊',
+  '[大笑]': '😃',
+  '[开心]': '😄',
+  '[笑哭]': '😂',
+  '[眨眼]': '😉',
+  '[色]': '😍',
+  '[亲亲]': '😘',
+  '[害羞]': '😳',
+  '[得意]': '😎',
+  '[酷]': '🆒',
+  '[大哭]': '😭',
+  '[流泪]': '😢',
+  '[委屈]': '😞',
+  '[难过]': '😔',
+  '[抓狂]': '😤',
+  '[发怒]': '😠',
+  '[生气]': '😡',
+  '[惊讶]': '😲',
+  '[惊恐]': '😱',
+  '[晕]': '😵',
+  '[困]': '😴',
+  '[思考]': '🤔',
+  '[疑问]': '❓',
+  '[闭嘴]': '🤐',
+  '[嘘]': '🤫',
+  '[鄙视]': '🙄',
+  '[白眼]': '🙄',
+  '[赞]': '👍',
+  '[弱]': '👎',
+  '[握手]': '🤝',
+  '[胜利]': '✌️',
+  '[OK]': '👌',
+  '[爱心]': '❤️',
+  '[玫瑰]': '🌹',
+  '[礼物]': '🎁',
+  '[蛋糕]': '🎂',
+  '[咖啡]': '☕',
+  '[啤酒]': '🍺',
+  '[干杯]': '🥂',
+  '[鼓掌]': '👏',
+  '[加油]': '💪',
+  '[抱拳]': '🙏',
+  '[再见]': '👋',
+  '[好的]': '✅',
+  '[不行]': '❌',
+  '[星星]': '⭐',
+  '[月亮]': '🌙',
+  '[太阳]': '☀️',
+  '[彩虹]': '🌈',
+  '[烟花]': '🎆',
+  '[庆祝]': '🎉',
+  '[红包]': '🧧',
+  '[钱]': '💰',
+  '[飞机]': '✈️',
+  '[汽车]': '🚗',
+  '[火车]': '🚂',
+  '[轮船]': '🚢',
+  '[自行车]': '🚲',
+  '[电话]': '📞',
+  '[邮件]': '📧',
+  '[电脑]': '💻',
+  '[手机]': '📱',
+  '[音乐]': '🎵',
+  '[电影]': '🎬',
+  '[游戏]': '🎮',
+  '[足球]': '⚽',
+  '[篮球]': '🏀',
+  '[乒乓球]': '🏓',
+}
+
+// 渲染消息内容，将表情代码转换为 emoji
+const renderMessage = (content) => {
+  if (!content) return ''
+  
+  // 转义 HTML 特殊字符
+  let html = content
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+  
+  // 将表情代码替换为 emoji
+  for (const [code, emoji] of Object.entries(emojiMap)) {
+    const regex = new RegExp(code.replace(/[\[\]]/g, '\\$&'), 'g')
+    html = html.replace(regex, `<span class="emoji">${emoji}</span>`)
+  }
+  
+  // 将换行符转换为 <br>
+  html = html.replace(/\n/g, '<br>')
+  
+  return html
+}
+
+// 处理表情选择
+const handleEmojiSelect = (emojiCode) => {
+  if (!inputMessage.value) {
+    inputMessage.value = emojiCode
+  } else {
+    inputMessage.value += emojiCode
+  }
+}
+
+// 文件上传前处理
+const beforeUpload = (file) => {
+  // 验证文件类型，只允许图片
+  if (!file.type.startsWith('image/')) {
+    ElMessage.error(t('customer.conversation.only_image_allowed') || '只能上传图片文件')
+    return false
+  }
+  
+  uploadingFile.value = file
+  
+  // 上传文件
+  uploadFile(file, (progress) => {
+    // 上传进度处理
+  }).then(response => {
+    if (response.code === 200) {
+      const attachment = response.data || response
+      // 发送图片消息（只允许图片，所以 isImage 始终为 true）
+      handleSendFileMessage(attachment, true)
+    } else {
+      ElMessage.error(response.message || t('customer.conversation.upload_failed'))
+      uploadingFile.value = null
+    }
+  }).catch(error => {
+    console.error('Upload error:', error)
+    ElMessage.error(error.response?.data?.message || error.message || t('customer.conversation.upload_failed'))
+    uploadingFile.value = null
+    ErrorHandler.handle(error)
+  })
+  
+  return false // 阻止默认上传
+}
+
+// 处理上传成功
+const handleUploadSuccess = (response) => {
+  // Element Plus 的 on-success 回调接收的 response 可能是 response.data
+  const data = response.data || response
+  if (data.code === 200 || data.id) {
+    const attachment = data.data || data
+    // 只允许图片，所以 isImage 始终为 true
+    handleSendFileMessage(attachment, true)
+  } else {
+    ElMessage.error(data.message || t('customer.conversation.upload_failed'))
+  }
+  uploadingFile.value = null
+}
+
+// 处理上传失败
+const handleUploadError = (error) => {
+  ElMessage.error(t('customer.conversation.upload_failed'))
+  uploadingFile.value = null
+}
+
+// 发送文件消息
+const handleSendFileMessage = async (attachment, isImage) => {
+  if (!attachment) return
+  
+  // 兼容大小写字段名
+  const fileUrl = attachment.file_url || attachment.FileURL || attachment.fileUrl
+  const fileName = attachment.filename || attachment.Filename || attachment.fileName || ''
+  const fileSize = attachment.size || attachment.Size || 0
+  
+  if (!fileUrl) {
+    ElMessage.error(t('customer.conversation.upload_failed') || '上传失败：无法获取文件URL')
+    return
+  }
+  
+  sending.value = true
+  
+  try {
+    const response = await sendMessage({
+      conversation_id: props.conversationId,
+      content: isImage ? '' : fileName,
+      type: isImage ? 'image' : 'file',
+      file_url: fileUrl,
+      file_name: fileName,
+      file_size: fileSize
+    })
+    
+    if (response.code === 200) {
+      if (response.data) {
+        const exists = messages.value.some(m => m.id === response.data.id)
+        if (!exists) {
+          messages.value.push(response.data)
+          // 如果是图片消息，加载图片
+          if (response.data.type === 'image' && response.data.file_url) {
+            loadMessageImage(response.data)
+          }
+          scrollToBottom()
+        }
+      } else {
+        await loadMessages()
+      }
+    }
+  } catch (error) {
+    ErrorHandler.handle(error)
+  } finally {
+    sending.value = false
+  }
+}
+
+// 格式化文件大小
+const formatFileSize = (bytes) => {
+  if (!bytes) return ''
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
+}
+
+// 加载消息中的图片并转换为blob URL
+const loadMessageImage = async (message) => {
+  if (!message || message.type !== 'image' || !message.file_url) return
+  
+  const messageId = message.id
+  if (!messageId) return
+  
+  // 如果已经加载过，直接返回
+  if (imageUrlMap.value.has(messageId)) {
+    return
+  }
+  
+  const fileUrl = message.file_url || message.FileURL
+  if (!fileUrl) return
+  
+  // 如果是外部URL（http/https），直接使用
+  if (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')) {
+    imageUrlMap.value.set(messageId, fileUrl)
+    return
+  }
+  
+  // 构建完整的URL
+  const apiBaseURL = import.meta.env.VITE_API_BASE_URL
+  const apiPrefix = import.meta.env.VITE_API_PREFIX || '/api/admin'
+  let fullUrl = fileUrl
+  if (apiBaseURL) {
+    const base = apiBaseURL.replace(/\/+$/, '')
+    fullUrl = `${base}${fileUrl.startsWith('/') ? '' : '/'}${fileUrl}`
+  } else {
+    fullUrl = `${apiPrefix}${fileUrl.startsWith('/') ? '' : '/'}${fileUrl}`
+  }
+  
+  // 通过axios获取图片并转换为blob URL
+  // 因为预览接口需要JWT认证，直接使用src无法携带认证头
+  try {
+    const token = Storage.getItem('token', '') || ''
+    const tokenStr = typeof token === 'string' ? token.trim() : ''
+    const response = await axios.get(fullUrl, {
+      responseType: 'blob',
+      headers: {
+        'Authorization': `Bearer ${tokenStr}`
+      }
+    })
+    const blob = new Blob([response.data])
+    const blobUrl = URL.createObjectURL(blob)
+    imageUrlMap.value.set(messageId, blobUrl)
+  } catch (error) {
+    console.error('Failed to load message image:', error)
+    // 加载失败时设置为原始URL，让浏览器尝试直接加载
+    imageUrlMap.value.set(messageId, fileUrl)
+  }
+}
+
+// 获取消息图片URL
+const getMessageImageUrl = (message) => {
+  if (!message || message.type !== 'image' || !message.file_url) return ''
+  
+  const messageId = message.id
+  if (!messageId) return message.file_url
+  
+  // 从缓存中获取
+  const cachedUrl = imageUrlMap.value.get(messageId)
+  if (cachedUrl) {
+    return cachedUrl
+  }
+  
+  // 如果还没有加载，异步加载
+  loadMessageImage(message)
+  
+  // 返回原始URL作为占位符
+  return message.file_url
+}
+
+// 图片加载成功
+const handleImageLoad = () => {
+  // 图片加载成功，不需要额外处理
+}
+
+// 图片加载失败
+const handleImageError = (event) => {
+  console.error('Image load error:', event)
+  // 可以在这里显示错误提示
+}
+
+// 转接会话
+const handleTransferConversation = async () => {
+  if (!transferForm.value.to_admin_id) {
+    ElMessage.warning(t('customer.conversation.transfer_select_warning'))
+    return
+  }
+  
+  transferring.value = true
+  try {
+    const response = await transferConversation({
+      conversation_id: props.conversationId,
+      to_admin_id: transferForm.value.to_admin_id
+    })
+    
+    if (response.code === 200) {
+      ElMessage.success(t('customer.conversation.transfer_success'))
+      showTransferDialog.value = false
+      transferForm.value.to_admin_id = null
+      await loadConversation() // 重新加载会话信息
+    }
+  } catch (error) {
+    ErrorHandler.handle(error)
+  } finally {
+    transferring.value = false
+  }
+}
+
+// 评价会话
+const handleRateConversation = async () => {
+  if (!rateForm.value.rating || rateForm.value.rating < 1) {
+    ElMessage.warning(t('customer.conversation.rate_select_warning'))
+    return
+  }
+  
+  rating.value = true
+  try {
+    const response = await rateConversation({
+      conversation_id: props.conversationId,
+      rating: rateForm.value.rating,
+      rating_note: rateForm.value.rating_note
+    })
+    
+    if (response.code === 200) {
+      ElMessage.success(t('customer.conversation.rate_success'))
+      showRateDialog.value = false
+      rateForm.value = { rating: 0, rating_note: '' }
+      await loadConversation() // 重新加载会话信息
+    }
+  } catch (error) {
+    ErrorHandler.handle(error)
+  } finally {
+    rating.value = false
+  }
+}
+
+// 加载在线客服列表
+const loadOnlineAdmins = async () => {
+  try {
+    const response = await getOnlineAdmins()
+    if (response.code === 200) {
+      onlineAdmins.value = response.data || []
+    }
+  } catch (error) {
+    ErrorHandler.handle(error)
+  }
+}
+
 // 获取状态类型
 const getStatusType = (status) => {
   if (status == null || status === undefined) {
@@ -583,7 +1064,7 @@ const handleWebSocketMessage = (message) => {
       if (conversation.value) {
         conversation.value.status = 2
       }
-      ElMessage.info('会话已结束')
+      ElMessage.info(t('customer.conversation.end_success'))
       emit('ended')
     }
     return
@@ -613,14 +1094,19 @@ const handleWebSocketMessage = (message) => {
         sender_id: message.sender_id,
         content: message.content,
         type: message.type,
-        file_url: message.file_url || '',
-        file_name: message.file_name || '',
-        file_size: message.file_size || 0,
+        file_url: message.file_url || message.FileURL || '',
+        file_name: message.file_name || message.FileName || '',
+        file_size: message.file_size || message.FileSize || 0,
         is_read: false,
         created_at: new Date(message.timestamp * 1000).toISOString()
       }
       
       messages.value.push(newMessage)
+      
+      // 如果是图片消息，加载图片
+      if (newMessage.type === 'image' && newMessage.file_url) {
+        loadMessageImage(newMessage)
+      }
       
       // 如果用户不在底部，增加未读计数
       if (!isAtBottom.value) {
@@ -657,6 +1143,20 @@ onMounted(async () => {
 onUnmounted(() => {
   // 断开 WebSocket 连接
   disconnectWebSocket()
+  // 清理所有 blob URL，避免内存泄漏
+  imageUrlMap.value.forEach((blobUrl) => {
+    if (blobUrl && blobUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(blobUrl)
+    }
+  })
+  imageUrlMap.value.clear()
+})
+
+// 打开转接对话框时加载在线客服列表
+watch(showTransferDialog, (visible) => {
+  if (visible) {
+    loadOnlineAdmins()
+  }
 })
 
 // 监听 conversationId 变化，重新连接 WebSocket
@@ -858,6 +1358,14 @@ watch(messages, () => {
   margin-bottom: 4px;
 }
 
+.message-text :deep(.emoji) {
+  display: inline-block;
+  font-size: 1.2em;
+  line-height: 1;
+  vertical-align: middle;
+  margin: 0 2px;
+}
+
 .message-time {
   font-size: 12px;
   opacity: 0.7;
@@ -884,6 +1392,20 @@ watch(messages, () => {
   padding: 12px 16px;
   background: #fff;
   border-top: 1px solid #e4e7ed;
+}
+
+.input-wrapper {
+  position: relative;
+}
+
+.input-toolbar {
+  position: absolute;
+  bottom: 15px;
+  left: 5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 10;
 }
 
 .send-actions {

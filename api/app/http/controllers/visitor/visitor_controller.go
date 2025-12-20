@@ -1,7 +1,11 @@
 package visitor
 
 import (
+	"fmt"
+	"mime"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	apphttp "github.com/goravel/framework/contracts/http"
@@ -12,6 +16,7 @@ import (
 	"goravel/app/http/response"
 	"goravel/app/models"
 	"goravel/app/services"
+	"goravel/app/utils"
 	imhub "goravel/app/websocket/im"
 )
 
@@ -285,9 +290,19 @@ func (r *VisitorController) SendMessage(ctx apphttp.Context) apphttp.Response {
 	visitorID := ctx.Request().Input("visitor_id", "")
 	content := ctx.Request().Input("content", "")
 	msgType := ctx.Request().Input("type", "text")
+	fileURL := ctx.Request().Input("file_url", "")
+	fileName := ctx.Request().Input("file_name", "")
+	fileSize := cast.ToInt64(ctx.Request().Input("file_size", "0"))
 
-	if conversationID == 0 || visitorID == "" || content == "" {
+	// 文本消息必须有内容，文件/图片消息必须有 file_url
+	if conversationID == 0 || visitorID == "" {
 		return response.Error(ctx, http.StatusBadRequest, "invalid_params")
+	}
+	if msgType == "text" && content == "" {
+		return response.Error(ctx, http.StatusBadRequest, "content_required")
+	}
+	if (msgType == "image" || msgType == "file") && fileURL == "" {
+		return response.Error(ctx, http.StatusBadRequest, "file_url_required")
 	}
 
 	// 查找访客
@@ -308,9 +323,9 @@ func (r *VisitorController) SendMessage(ctx apphttp.Context) apphttp.Response {
 		visitor.ID,
 		content,
 		msgType,
-		"",
-		"",
-		0,
+		fileURL,
+		fileName,
+		fileSize,
 	)
 	if err != nil {
 		return response.Error(ctx, http.StatusInternalServerError, "send_message_failed")
@@ -318,16 +333,99 @@ func (r *VisitorController) SendMessage(ctx apphttp.Context) apphttp.Response {
 
 	// 通过 WebSocket 广播消息
 	imhub.Hub().BroadcastToConversation(conversationID, &imhub.Message{
-		Type:           string(msgType),
+		Type:           msgType,
 		ConversationID: conversationID,
 		SenderType:     "visitor",
 		SenderID:       visitor.ID,
 		Content:        content,
+		FileURL:        fileURL,
+		FileName:       fileName,
+		FileSize:       fileSize,
 		Timestamp:      time.Now().Unix(),
 		MessageID:      message.ID,
 	})
 
 	return response.Success(ctx, message)
+}
+
+// EndConversation 访客结束会话
+func (r *VisitorController) EndConversation(ctx apphttp.Context) apphttp.Response {
+	visitorID := ctx.Request().Input("visitor_id", "")
+	conversationID := cast.ToUint(ctx.Request().Input("conversation_id", "0"))
+
+	if visitorID == "" {
+		return response.Error(ctx, http.StatusBadRequest, "visitor_id_required")
+	}
+
+	if conversationID == 0 {
+		return response.Error(ctx, http.StatusBadRequest, "conversation_id_required")
+	}
+
+	// 查找访客
+	var visitor models.Visitor
+	if err := facades.Orm().Query().Where("visitor_id", visitorID).First(&visitor); err != nil {
+		return response.Error(ctx, http.StatusNotFound, "visitor_not_found")
+	}
+
+	// 验证会话属于该访客
+	var conversation models.Conversation
+	if err := facades.Orm().Query().Where("id", conversationID).Where("visitor_id", visitor.ID).First(&conversation); err != nil {
+		return response.Error(ctx, http.StatusNotFound, "conversation_not_found")
+	}
+
+	// 只有进行中的会话才能结束
+	if conversation.Status != 1 {
+		return response.Error(ctx, http.StatusBadRequest, "conversation_already_ended")
+	}
+
+	// 结束会话
+	if err := r.customerService.EndConversation(conversationID); err != nil {
+		return response.Error(ctx, http.StatusInternalServerError, "end_conversation_failed")
+	}
+
+	// 发送系统消息：会话已结束
+	imhub.Hub().BroadcastSystemMessage(conversationID, "ended", nil)
+
+	return response.Success(ctx, nil)
+}
+
+// RateConversation 访客评价会话
+func (r *VisitorController) RateConversation(ctx apphttp.Context) apphttp.Response {
+	visitorID := ctx.Request().Input("visitor_id", "")
+	conversationID := cast.ToUint(ctx.Request().Input("conversation_id", "0"))
+	rating := cast.ToUint8(ctx.Request().Input("rating", "0"))
+	ratingNote := ctx.Request().Input("rating_note", "")
+
+	if visitorID == "" || conversationID == 0 {
+		return response.Error(ctx, http.StatusBadRequest, "visitor_id_and_conversation_id_required")
+	}
+
+	if rating < 1 || rating > 5 {
+		return response.Error(ctx, http.StatusBadRequest, "invalid_rating")
+	}
+
+	// 查找访客
+	var visitor models.Visitor
+	if err := facades.Orm().Query().Where("visitor_id", visitorID).First(&visitor); err != nil {
+		return response.Error(ctx, http.StatusNotFound, "visitor_not_found")
+	}
+
+	// 验证会话属于该访客
+	var conversation models.Conversation
+	if err := facades.Orm().Query().Where("id", conversationID).Where("visitor_id", visitor.ID).First(&conversation); err != nil {
+		return response.Error(ctx, http.StatusNotFound, "conversation_not_found")
+	}
+
+	// 只有已结束的会话才能评价
+	if conversation.Status != 2 {
+		return response.Error(ctx, http.StatusBadRequest, "can_only_rate_ended_conversation")
+	}
+
+	if err := r.customerService.RateConversation(conversationID, rating, ratingNote); err != nil {
+		return response.Error(ctx, http.StatusInternalServerError, "rate_conversation_failed")
+	}
+
+	return response.Success(ctx, nil)
 }
 
 // WebSocket 访客 WebSocket 连接
@@ -365,4 +463,201 @@ func (r *VisitorController) WebSocket(ctx apphttp.Context) apphttp.Response {
 	})
 
 	return nil
+}
+
+// UploadImage 访客上传图片（公开接口，添加水印）
+func (r *VisitorController) UploadImage(ctx apphttp.Context) apphttp.Response {
+	file, err := ctx.Request().File("file")
+	if err != nil {
+		return response.Error(ctx, http.StatusBadRequest, "file_required")
+	}
+
+	filename := file.GetClientOriginalName()
+	if filename == "" {
+		filename = "uploaded_image.jpg"
+	}
+
+	// 验证文件类型，只允许图片
+	ext := filepath.Ext(filename)
+	mimeType := mime.TypeByExtension(ext)
+	if !strings.HasPrefix(mimeType, "image/") {
+		return response.Error(ctx, http.StatusBadRequest, "only_image_allowed")
+	}
+
+	// 读取文件内容
+	storage := facades.Storage().Disk("local")
+	savedPath, err := storage.PutFile("", file)
+	if err != nil {
+		return response.ErrorWithLog(ctx, "visitor_upload", err, map[string]any{
+			"filename": filename,
+		})
+	}
+
+	// 读取文件内容
+	fileDataStr, err := storage.Get(savedPath)
+	if err != nil {
+		_ = storage.Delete(savedPath)
+		return response.ErrorWithLog(ctx, "visitor_upload", err, map[string]any{
+			"filename": filename,
+		})
+	}
+
+	// 清理临时文件
+	_ = storage.Delete(savedPath)
+
+	// 转换为字节数组
+	fileData := []byte(fileDataStr)
+
+	// 从配置中获取水印设置
+	watermarkImagePath := utils.GetConfigValue("watermark", "watermark_image_path", "")
+	watermarkPosition := utils.GetConfigValue("watermark", "watermark_position", "bottom-right")
+	watermarkOpacity := utils.GetConfigValueInt("watermark", "watermark_opacity", 128)
+	watermarkScale := utils.GetConfigValueFloat("watermark", "watermark_scale", 0.3)
+
+	// 如果启用了水印，添加水印
+	if watermarkImagePath != "" {
+		// 如果路径是 attachment:ID 格式，通过ID查找附件路径
+		var actualPath string
+		if strings.HasPrefix(watermarkImagePath, "attachment:") {
+			attachmentIDStr := strings.TrimPrefix(watermarkImagePath, "attachment:")
+			attachmentID := cast.ToUint(attachmentIDStr)
+			if attachmentID > 0 {
+				var attachment models.Attachment
+				if err := facades.Orm().Query().Where("id", attachmentID).First(&attachment); err == nil {
+					actualPath = attachment.Path
+				} else {
+					facades.Log().Errorf("查找水印附件失败: %v, id: %d", err, attachmentID)
+				}
+			}
+		} else {
+			actualPath = watermarkImagePath
+		}
+
+		if actualPath != "" {
+			watermarkedData, err := utils.AddWatermark(
+				fileData,
+				actualPath,
+				watermarkPosition,
+				watermarkOpacity,
+				watermarkScale,
+			)
+			if err != nil {
+				facades.Log().Errorf("添加水印失败: %v", err)
+				// 水印添加失败，使用原图
+			} else {
+				fileData = watermarkedData
+			}
+		}
+	}
+
+	// 使用附件服务保存文件
+	attachmentService := services.NewAttachmentService(ctx)
+	attachment, err := attachmentService.UploadFile(fileData, filename, mimeType)
+	if err != nil {
+		return response.ErrorWithLog(ctx, "visitor_upload", err, map[string]any{
+			"filename": filename,
+		})
+	}
+
+	// 返回访客专用的文件URL（不需要认证）
+	visitorFileURL := fmt.Sprintf("/api/visitor/attachments/%d/preview", attachment.ID)
+
+	return response.Success(ctx, "upload_success", apphttp.Json{
+		"id":        attachment.ID,
+		"filename":  attachment.Filename,
+		"size":      attachment.Size,
+		"mime_type": attachment.MimeType,
+		"file_type": attachment.FileType,
+		"file_url":  visitorFileURL,
+	})
+}
+
+// PreviewAttachment 预览附件（访客专用，公开接口）
+func (r *VisitorController) PreviewAttachment(ctx apphttp.Context) apphttp.Response {
+	id := cast.ToUint(ctx.Request().Route("id"))
+	if id == 0 {
+		return response.Error(ctx, http.StatusBadRequest, "id_required")
+	}
+
+	var attachment models.Attachment
+	if err := facades.Orm().Query().Where("id", id).First(&attachment); err != nil {
+		return response.Error(ctx, http.StatusNotFound, "record_not_found")
+	}
+
+	if attachment.Path == "" || attachment.Disk == "" {
+		return response.Error(ctx, http.StatusBadRequest, "file_path_required")
+	}
+
+	// 对于云存储，尝试生成临时URL并重定向
+	if attachment.Disk != "local" && attachment.Disk != "public" {
+		storage := facades.Storage().Disk(attachment.Disk)
+		if url, err := storage.TemporaryUrl(attachment.Path, time.Now().Add(24*time.Hour)); err == nil {
+			return ctx.Response().Redirect(http.StatusFound, url)
+		}
+
+		// 如果生成临时URL失败，尝试从配置获取基础URL
+		attachmentService := services.NewAttachmentService(ctx)
+		directURL := attachmentService.GetFileURL(&attachment)
+		if directURL != "" && !strings.Contains(directURL, "/api/admin/attachments/") {
+			return ctx.Response().Redirect(http.StatusFound, directURL)
+		}
+	}
+
+	// 对于本地存储，使用服务器中转
+	storage := facades.Storage().Disk(attachment.Disk)
+	content, err := storage.Get(attachment.Path)
+	if err != nil {
+		return response.ErrorWithLog(ctx, "visitor_attachment", err, map[string]any{
+			"disk": attachment.Disk,
+			"path": attachment.Path,
+		})
+	}
+
+	// 设置响应头
+	mimeType := attachment.MimeType
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	// 设置响应头
+	response := ctx.Response().
+		Header("Content-Type", mimeType).
+		Header("Content-Length", fmt.Sprintf("%d", len(content))).
+		Header("Cache-Control", "public, max-age=3600")
+
+	// 对于图片和视频，支持范围请求
+	if attachment.FileType == "image" || attachment.FileType == "video" {
+		response = response.Header("Accept-Ranges", "bytes")
+	}
+
+	return response.String(http.StatusOK, content)
+}
+
+// Heartbeat 心跳接口，用于更新会话的最后活跃时间
+func (r *VisitorController) Heartbeat(ctx apphttp.Context) apphttp.Response {
+	conversationID := ctx.Request().Input("conversation_id", "")
+	if conversationID == "" {
+		return response.Error(ctx, http.StatusBadRequest, "conversation_id_required")
+	}
+
+	conversationIDUint := cast.ToUint(conversationID)
+	if conversationIDUint == 0 {
+		return response.Error(ctx, http.StatusBadRequest, "invalid_conversation_id")
+	}
+
+	// 更新会话的最后消息时间（复用这个字段作为最后活跃时间）
+	now := time.Now()
+	_, err := facades.Orm().Query().
+		Model(&models.Conversation{}).
+		Where("id", conversationIDUint).
+		Where("status", 1). // 只更新进行中的会话
+		Update("last_message_at", now)
+	if err != nil {
+		facades.Log().Errorf("更新会话心跳失败: conversation_id=%d, error=%v", conversationIDUint, err)
+		return response.Error(ctx, http.StatusInternalServerError, "heartbeat_failed")
+	}
+
+	return response.Success(ctx, "heartbeat_success", apphttp.Json{
+		"timestamp": now.Unix(),
+	})
 }

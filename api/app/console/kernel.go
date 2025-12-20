@@ -17,6 +17,8 @@ func (kernel *Kernel) Schedule() []schedule.Event {
 		facades.Schedule().Command("app:clear-logs").DailyAt("02:00").OnOneServer(),
 		// 每天凌晨3点执行，清理3天前的分片文件
 		facades.Schedule().Command("app:clear-chunks").DailyAt("03:00").OnOneServer(),
+		// 每5分钟执行一次，自动结束长时间没有访客连接的会话
+		facades.Schedule().Command("app:auto-end-conversations").EveryFiveMinutes().OnOneServer(),
 	}
 }
 func (kernel *Kernel) Commands() []console.Command {
@@ -26,5 +28,6 @@ func (kernel *Kernel) Commands() []console.Command {
 		&commands.CreateToken{},
 		&commands.QueueStats{},
 		&commands.QueueClear{},
+		&commands.AutoEndConversations{},
 	}
 }

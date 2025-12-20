@@ -1,4 +1,4 @@
-package services
+﻿package services
 
 import (
 	"time"
@@ -11,39 +11,41 @@ import (
 )
 
 type CustomerService interface {
-	// CreateOrGetVisitor 创建或获取访客
 	CreateOrGetVisitor(visitorID string, name, email, phone, ip, userAgent, source, referer, location, device, browser, os string) (*models.Visitor, error)
-	// UpdateVisitorStatus 更新访客状态
+
 	UpdateVisitorStatus(visitorID uint, status uint8) error
-	// CreateConversation 创建会话
+
 	CreateConversation(visitorID uint, adminID *uint, title string) (*models.Conversation, error)
-	// AssignConversation 分配会话给客服
+
 	AssignConversation(conversationID uint, adminID uint) error
-	// GetAvailableAdmin 获取可用的客服（最少会话数策略）
+
 	GetAvailableAdmin() (*models.Admin, error)
-	// SendMessage 发送消息
+
 	SendMessage(conversationID uint, senderType string, senderID uint, content, msgType, fileURL, fileName string, fileSize int64) (*models.Message, error)
-	// MarkMessageAsRead 标记消息为已读
+
 	MarkMessageAsRead(messageID uint) error
-	// MarkConversationMessagesAsRead 标记会话所有消息为已读
+
 	MarkConversationMessagesAsRead(conversationID uint, readerID uint) error
-	// EndConversation 结束会话
+
 	EndConversation(conversationID uint) error
-	// GetConversationMessages 获取会话消息列表
+
 	GetConversationMessages(conversationID uint, page, pageSize int) ([]models.Message, int64, error)
-	// GetVisitorAllMessages 获取访客的所有历史消息（跨会话，游标分页）
-	// beforeID: 获取比这个ID更早的消息，0表示获取最新消息
+
 	GetVisitorAllMessages(visitorID uint, beforeID uint, limit int) ([]models.Message, bool, error)
-	// GetVisitorConversations 获取访客的会话列表
+
 	GetVisitorConversations(visitorID uint) ([]models.Conversation, error)
-	// GetAdminConversations 获取客服的会话列表
+
 	GetAdminConversations(adminID uint, status *uint8) ([]models.Conversation, error)
-	// GetAdminConversationsPaginated 获取客服的会话列表（分页）
+
 	GetAdminConversationsPaginated(adminID uint, status *uint8, page, pageSize int) ([]models.Conversation, int64, error)
-	// GetAllConversations 获取所有会话列表
+
 	GetAllConversations(status *uint8) ([]models.Conversation, error)
-	// GetAllConversationsPaginated 获取所有会话列表（分页，支持搜索）
+
 	GetAllConversationsPaginated(status *uint8, conversationID *uint, visitorName string, page, pageSize int) ([]models.Conversation, int64, error)
+
+	TransferConversation(conversationID uint, fromAdminID uint, toAdminID uint) error
+
+	RateConversation(conversationID uint, rating uint8, ratingNote string) error
 }
 
 type CustomerServiceImpl struct{}
@@ -52,16 +54,13 @@ func NewCustomerService() *CustomerServiceImpl {
 	return &CustomerServiceImpl{}
 }
 
-// CreateOrGetVisitor 创建或获取访客
 func (s *CustomerServiceImpl) CreateOrGetVisitor(visitorID string, name, email, phone, ip, userAgent, source, referer, location, device, browser, os string) (*models.Visitor, error) {
 	var visitor models.Visitor
 
-	// 如果 visitorID 为空，生成一个新的
 	if visitorID == "" {
 		visitorID = ulid.Make().String()
 	}
 
-	// 查找或创建访客
 	err := facades.Orm().Query().Where("visitor_id", visitorID).FirstOrCreate(&visitor, models.Visitor{
 		VisitorID: visitorID,
 		Name:      name,
@@ -82,7 +81,6 @@ func (s *CustomerServiceImpl) CreateOrGetVisitor(visitorID string, name, email, 
 		return nil, err
 	}
 
-	// 更新最后活跃时间
 	now := time.Now()
 	visitor.LastActiveAt = &now
 	visitor.Status = 1
@@ -93,21 +91,19 @@ func (s *CustomerServiceImpl) CreateOrGetVisitor(visitorID string, name, email, 
 	return &visitor, nil
 }
 
-// UpdateVisitorStatus 更新访客状态
 func (s *CustomerServiceImpl) UpdateVisitorStatus(visitorID uint, status uint8) error {
 	_, err := facades.Orm().Query().Model(&models.Visitor{}).Where("id", visitorID).Update("status", status)
 	return err
 }
 
-// CreateConversation 创建会话
 func (s *CustomerServiceImpl) CreateConversation(visitorID uint, adminID *uint, title string) (*models.Conversation, error) {
 	now := time.Now()
 	conversation := models.Conversation{
 		VisitorID:     visitorID,
 		AdminID:       adminID,
 		Title:         title,
-		Status:        1, // 进行中
-		Priority:      1, // 普通
+		Status:        1,
+		Priority:      1,
 		StartedAt:     &now,
 		LastMessageAt: &now,
 	}
@@ -116,7 +112,6 @@ func (s *CustomerServiceImpl) CreateConversation(visitorID uint, adminID *uint, 
 		return nil, err
 	}
 
-	// 加载关联数据
 	if conversation.VisitorID > 0 {
 		facades.Orm().Query().Where("id", conversation.VisitorID).First(&conversation.Visitor)
 	}
@@ -130,22 +125,17 @@ func (s *CustomerServiceImpl) CreateConversation(visitorID uint, adminID *uint, 
 	return &conversation, nil
 }
 
-// AssignConversation 分配会话给客服
 func (s *CustomerServiceImpl) AssignConversation(conversationID uint, adminID uint) error {
 	_, err := facades.Orm().Query().Model(&models.Conversation{}).Where("id", conversationID).Update("admin_id", adminID)
 	return err
 }
 
-// GetAvailableAdmin 获取可用的客服（最少会话数策略）
 func (s *CustomerServiceImpl) GetAvailableAdmin() (*models.Admin, error) {
-	// 先获取客服角色的ID
 	var customerServiceRole models.Role
 	if err := facades.Orm().Query().Where("slug", "customer-service").Where("status", 1).First(&customerServiceRole); err != nil {
-		// 如果没有客服角色，返回 nil
 		return nil, nil
 	}
 
-	// 获取所有启用的、具有客服角色的管理员
 	var adminIDs []uint
 	if err := facades.Orm().Query().
 		Table("admin_role").
@@ -159,7 +149,6 @@ func (s *CustomerServiceImpl) GetAvailableAdmin() (*models.Admin, error) {
 		return nil, nil
 	}
 
-	// 获取这些管理员的信息
 	var admins []models.Admin
 	if err := facades.Orm().Query().
 		Where("id IN ?", adminIDs).
@@ -172,23 +161,23 @@ func (s *CustomerServiceImpl) GetAvailableAdmin() (*models.Admin, error) {
 		return nil, nil
 	}
 
-	// 获取每个客服的当前会话数
+	// 获取每个客服当前的会话数
 	adminConversationCount := make(map[uint]int64)
 	for _, admin := range admins {
 		count, err := facades.Orm().Query().Model(&models.Conversation{}).
 			Where("admin_id", admin.ID).
-			Where("status", 1). // 只统计进行中的会话
+			Where("status", 1).
 			Count()
 		if err == nil {
 			adminConversationCount[admin.ID] = count
 		}
 	}
 
-	// 找到会话数最少的在线客服（优先在线且最闲）
+	// 找到会话数最少的在线客服，如果没有在线的则选会话数最少的
 	var selectedAdmin *models.Admin
 	minCount := int64(999999)
 
-	// 第一轮：优先选择在线且会话数最少的客服
+	// 第一步：优先选择在线且会话数最少的客服
 	for i := range admins {
 		count := adminConversationCount[admins[i].ID]
 		if imhub.Hub().IsAdminOnline(admins[i].ID) {
@@ -199,7 +188,7 @@ func (s *CustomerServiceImpl) GetAvailableAdmin() (*models.Admin, error) {
 		}
 	}
 
-	// 如果没有在线客服，选择会话数最少的（即使不在线）
+	// 如果没有在线客服，选择会话数最少的离线客服
 	if selectedAdmin == nil {
 		minCount = int64(999999)
 		for i := range admins {
@@ -240,7 +229,7 @@ func (s *CustomerServiceImpl) SendMessage(conversationID uint, senderType string
 		return nil, err
 	}
 
-	// 加载关联数据
+	// 关联会话信息
 	if message.ConversationID > 0 {
 		facades.Orm().Query().Where("id", message.ConversationID).First(&message.Conversation)
 	}
@@ -265,7 +254,7 @@ func (s *CustomerServiceImpl) MarkConversationMessagesAsRead(conversationID uint
 	now := time.Now()
 	_, err := facades.Orm().Query().Model(&models.Message{}).
 		Where("conversation_id", conversationID).
-		Where("sender_id != ?", readerID). // 不标记自己发送的消息
+		Where("sender_id != ?", readerID). // 排除自己发送的消息
 		Where("is_read", false).
 		Update(map[string]interface{}{
 			"is_read": true,
@@ -300,13 +289,13 @@ func (s *CustomerServiceImpl) GetConversationMessages(conversationID uint, page,
 		return nil, 0, err
 	}
 
-	// 分页查询 - 重新构建查询避免 count 影响
+	// 分页查询 - 重新创建查询避免count影响
 	offset := (page - 1) * pageSize
 	if err := facades.Orm().Query().Model(&models.Message{}).Where("conversation_id", conversationID).Order("id DESC").Limit(pageSize).Offset(offset).Find(&messages); err != nil {
 		return nil, 0, err
 	}
 
-	// 反转顺序，使最早的消息在前
+	// 反转顺序使最新消息在最后
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
@@ -314,9 +303,9 @@ func (s *CustomerServiceImpl) GetConversationMessages(conversationID uint, page,
 	return messages, total, nil
 }
 
-// GetVisitorAllMessages 获取访客的所有历史消息（跨会话，游标分页）
-// beforeID: 获取比这个ID更早的消息，0表示获取最新消息
-// 返回：消息列表、是否还有更多、错误
+// GetVisitorAllMessages 获取访客的所有历史消息（跨会话）分页
+// beforeID: 获取小于该ID的消息，0表示获取最新的
+// 返回：消息列表、是否有更多数据、错误
 func (s *CustomerServiceImpl) GetVisitorAllMessages(visitorID uint, beforeID uint, limit int) ([]models.Message, bool, error) {
 	// 先获取访客的所有会话ID
 	var conversationIDs []uint
@@ -330,7 +319,7 @@ func (s *CustomerServiceImpl) GetVisitorAllMessages(visitorID uint, beforeID uin
 		return []models.Message{}, false, nil
 	}
 
-	// 转换为 []any 类型
+	// 转换为[]any类型
 	ids := make([]any, len(conversationIDs))
 	for i, id := range conversationIDs {
 		ids[i] = id
@@ -340,24 +329,24 @@ func (s *CustomerServiceImpl) GetVisitorAllMessages(visitorID uint, beforeID uin
 	query := facades.Orm().Query().Model(&models.Message{}).
 		WhereIn("conversation_id", ids)
 
-	// 如果有 beforeID，获取比它更早的消息
+	// 如果有beforeID，获取小于该ID的消息
 	if beforeID > 0 {
 		query = query.Where("id < ?", beforeID)
 	}
 
-	// 多查一条用于判断是否还有更多
+	// 查询并判断是否有更多数据
 	var messages []models.Message
 	if err := query.Order("id DESC").Limit(limit + 1).Find(&messages); err != nil {
 		return nil, false, err
 	}
 
-	// 判断是否还有更多
+	// 判断是否有更多数据
 	hasMore := len(messages) > limit
 	if hasMore {
-		messages = messages[:limit] // 去掉多查的那一条
+		messages = messages[:limit] // 去掉最后一条（用于判断是否有更多）
 	}
 
-	// 反转数组，使最早的消息在前（方便前端显示）
+	// 反转数组，使最新消息在最后（前端展示）
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
@@ -374,7 +363,8 @@ func (s *CustomerServiceImpl) GetVisitorConversations(visitorID uint) ([]models.
 		Find(&conversations); err != nil {
 		return nil, err
 	}
-	// 批量加载关联数据
+
+	// 关联客服信息
 	for i := range conversations {
 		if conversations[i].AdminID != nil && *conversations[i].AdminID > 0 {
 			var admin models.Admin
@@ -399,7 +389,8 @@ func (s *CustomerServiceImpl) GetAdminConversations(adminID uint, status *uint8)
 	if err := query.Order("last_message_at DESC").Find(&conversations); err != nil {
 		return nil, err
 	}
-	// 批量加载关联数据
+
+	// 关联关联信息
 	for i := range conversations {
 		if conversations[i].VisitorID > 0 {
 			facades.Orm().Query().Where("id", conversations[i].VisitorID).First(&conversations[i].Visitor)
@@ -427,7 +418,7 @@ func (s *CustomerServiceImpl) GetAllConversations(status *uint8) ([]models.Conve
 		return nil, err
 	}
 
-	// 批量加载关联数据
+	// 收集关联ID
 	var visitorIDs []uint
 	var adminIDs []uint
 	for i := range conversations {
@@ -450,7 +441,7 @@ func (s *CustomerServiceImpl) GetAllConversations(status *uint8) ([]models.Conve
 		}
 	}
 
-	// 批量查询管理员
+	// 批量查询客服
 	adminMap := make(map[uint]models.Admin)
 	if len(adminIDs) > 0 {
 		var admins []models.Admin
@@ -461,7 +452,7 @@ func (s *CustomerServiceImpl) GetAllConversations(status *uint8) ([]models.Conve
 		}
 	}
 
-	// 填充关联数据
+	// 关联数据
 	for i := range conversations {
 		if conversations[i].VisitorID > 0 {
 			if visitor, ok := visitorMap[conversations[i].VisitorID]; ok {
@@ -478,7 +469,7 @@ func (s *CustomerServiceImpl) GetAllConversations(status *uint8) ([]models.Conve
 	return conversations, nil
 }
 
-// GetAdminConversationsPaginated 获取客服的会话列表（分页）
+// GetAdminConversationsPaginated 分页获取客服的会话列表
 func (s *CustomerServiceImpl) GetAdminConversationsPaginated(adminID uint, status *uint8, page, pageSize int) ([]models.Conversation, int64, error) {
 	query := facades.Orm().Query().Model(&models.Conversation{}).
 		Where("admin_id", adminID)
@@ -495,7 +486,7 @@ func (s *CustomerServiceImpl) GetAdminConversationsPaginated(adminID uint, statu
 		return nil, 0, err
 	}
 
-	// 分页查询 - 重新构建查询避免 count 影响
+	// 分页查询 - 重新创建查询避免count影响
 	query2 := facades.Orm().Query().Model(&models.Conversation{}).Where("admin_id", adminID)
 	if status != nil {
 		query2 = query2.Where("status", *status)
@@ -506,7 +497,7 @@ func (s *CustomerServiceImpl) GetAdminConversationsPaginated(adminID uint, statu
 		return nil, 0, err
 	}
 
-	// 批量加载关联数据
+	// 收集关联ID
 	var visitorIDs []uint
 	var adminIDs []uint
 	for i := range conversations {
@@ -529,7 +520,7 @@ func (s *CustomerServiceImpl) GetAdminConversationsPaginated(adminID uint, statu
 		}
 	}
 
-	// 批量查询管理员
+	// 批量查询客服
 	adminMap := make(map[uint]models.Admin)
 	if len(adminIDs) > 0 {
 		var admins []models.Admin
@@ -540,7 +531,7 @@ func (s *CustomerServiceImpl) GetAdminConversationsPaginated(adminID uint, statu
 		}
 	}
 
-	// 填充关联数据
+	// 关联数据
 	for i := range conversations {
 		if conversations[i].VisitorID > 0 {
 			if visitor, ok := visitorMap[conversations[i].VisitorID]; ok {
@@ -557,21 +548,21 @@ func (s *CustomerServiceImpl) GetAdminConversationsPaginated(adminID uint, statu
 	return conversations, total, nil
 }
 
-// GetAllConversationsPaginated 获取所有会话列表（分页，支持搜索）
+// GetAllConversationsPaginated 分页获取所有会话列表（支持筛选）
 func (s *CustomerServiceImpl) GetAllConversationsPaginated(status *uint8, conversationID *uint, visitorName string, page, pageSize int) ([]models.Conversation, int64, error) {
 	query := facades.Orm().Query().Model(&models.Conversation{})
 
-	// 搜索条件：会话ID
+	// 筛选会话ID
 	if conversationID != nil && *conversationID > 0 {
 		query = query.Where("id", *conversationID)
 	}
 
-	// 搜索条件：状态
+	// 筛选状态
 	if status != nil {
 		query = query.Where("status", *status)
 	}
 
-	// 搜索条件：访客姓名（需要关联查询）
+	// 筛选访客名称（需要关联查询）
 	var visitorIDs []uint
 	if visitorName != "" {
 		facades.Orm().Query().Model(&models.Visitor{}).
@@ -580,14 +571,14 @@ func (s *CustomerServiceImpl) GetAllConversationsPaginated(status *uint8, conver
 			Pluck("id", &visitorIDs)
 
 		if len(visitorIDs) > 0 {
-			// 转换为 []any 类型
+			// 转换为[]any类型
 			ids := make([]any, len(visitorIDs))
 			for i, id := range visitorIDs {
 				ids[i] = id
 			}
 			query = query.WhereIn("visitor_id", ids)
 		} else {
-			// 如果没有匹配的访客，返回空结果
+			// 如果没有匹配的访客，返回空列表
 			return []models.Conversation{}, 0, nil
 		}
 	}
@@ -600,7 +591,7 @@ func (s *CustomerServiceImpl) GetAllConversationsPaginated(status *uint8, conver
 		return nil, 0, err
 	}
 
-	// 分页查询 - 重新构建查询避免 count 影响
+	// 分页查询 - 重新创建查询避免count影响
 	query2 := facades.Orm().Query().Model(&models.Conversation{})
 
 	if conversationID != nil && *conversationID > 0 {
@@ -623,7 +614,7 @@ func (s *CustomerServiceImpl) GetAllConversationsPaginated(status *uint8, conver
 		return nil, 0, err
 	}
 
-	// 批量加载关联数据
+	// 收集关联ID
 	var conversationVisitorIDs []uint
 	var adminIDs []uint
 	for i := range conversations {
@@ -646,7 +637,7 @@ func (s *CustomerServiceImpl) GetAllConversationsPaginated(status *uint8, conver
 		}
 	}
 
-	// 批量查询管理员
+	// 批量查询客服
 	adminMap := make(map[uint]models.Admin)
 	if len(adminIDs) > 0 {
 		var admins []models.Admin
@@ -657,7 +648,7 @@ func (s *CustomerServiceImpl) GetAllConversationsPaginated(status *uint8, conver
 		}
 	}
 
-	// 填充关联数据
+	// 关联数据
 	for i := range conversations {
 		if conversations[i].VisitorID > 0 {
 			if visitor, ok := visitorMap[conversations[i].VisitorID]; ok {
@@ -672,4 +663,64 @@ func (s *CustomerServiceImpl) GetAllConversationsPaginated(status *uint8, conver
 	}
 
 	return conversations, total, nil
+}
+
+// TransferConversation 转接会话
+func (s *CustomerServiceImpl) TransferConversation(conversationID uint, fromAdminID uint, toAdminID uint) error {
+	// 验证会话是否存在
+	var conversation models.Conversation
+	if err := facades.Orm().Query().Where("id", conversationID).First(&conversation); err != nil {
+		return err
+	}
+
+	// 验证原客服是否拥有该会话
+	if conversation.AdminID == nil || *conversation.AdminID != fromAdminID {
+		if err := facades.Orm().Query().Model(&models.Conversation{}).Where("id", conversationID).Where("admin_id", fromAdminID).First(&conversation); err != nil {
+			return err
+		}
+	}
+
+	// 验证目标客服是否存在
+	var toAdmin models.Admin
+	if err := facades.Orm().Query().Where("id", toAdminID).First(&toAdmin); err != nil {
+		return err
+	}
+
+	// 更新会话的客服ID
+	_, err := facades.Orm().Query().Model(&models.Conversation{}).
+		Where("id", conversationID).
+		Update("admin_id", toAdminID)
+	if err != nil {
+		return err
+	}
+
+	// 发送系统消息通知会话转接
+	imhub.Hub().BroadcastSystemMessage(conversationID, "transferred", map[string]interface{}{
+		"from_admin_id": fromAdminID,
+		"to_admin_id":   toAdminID,
+		"to_admin_name": toAdmin.Nickname,
+	})
+
+	return nil
+}
+
+// RateConversation 评价会话
+func (s *CustomerServiceImpl) RateConversation(conversationID uint, rating uint8, ratingNote string) error {
+	// 验证评分范围（1-5星）
+	if rating < 1 || rating > 5 {
+		var conv models.Conversation
+		if err := facades.Orm().Query().Where("id", conversationID).First(&conv); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// 更新会话评分
+	_, err := facades.Orm().Query().Model(&models.Conversation{}).
+		Where("id", conversationID).
+		Update(map[string]interface{}{
+			"rating":      rating,
+			"rating_note": ratingNote,
+		})
+	return err
 }
