@@ -189,7 +189,6 @@ func Admin() {
 			router.Post("customer/conversations/assign", customerController.AssignConversation)
 			router.Post("customer/conversations/end", customerController.EndConversation)
 			router.Post("customer/conversations/transfer", customerController.TransferConversation)
-			router.Post("customer/conversations/rate", customerController.RateConversation)
 			router.Post("customer/messages/read", customerController.MarkMessagesAsRead)
 			router.Get("customer/visitors/online", customerController.GetOnlineVisitors)
 			router.Get("customer/admins/online", customerController.GetOnlineAdmins)

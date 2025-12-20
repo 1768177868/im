@@ -1007,6 +1007,7 @@
       "os": "操作系统",
       "status": "状态",
       "status_online": "在线",
+      "status_away": "离开",
       "status_offline": "离线",
       "last_active_at": "最后活跃时间"
     }

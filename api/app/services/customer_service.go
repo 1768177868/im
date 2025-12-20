@@ -44,8 +44,6 @@ type CustomerService interface {
 	GetAllConversationsPaginated(status *uint8, conversationID *uint, visitorName string, page, pageSize int) ([]models.Conversation, int64, error)
 
 	TransferConversation(conversationID uint, fromAdminID uint, toAdminID uint) error
-
-	RateConversation(conversationID uint, rating uint8, ratingNote string) error
 }
 
 type CustomerServiceImpl struct{}
@@ -702,25 +700,4 @@ func (s *CustomerServiceImpl) TransferConversation(conversationID uint, fromAdmi
 	})
 
 	return nil
-}
-
-// RateConversation 评价会话
-func (s *CustomerServiceImpl) RateConversation(conversationID uint, rating uint8, ratingNote string) error {
-	// 验证评分范围（1-5星）
-	if rating < 1 || rating > 5 {
-		var conv models.Conversation
-		if err := facades.Orm().Query().Where("id", conversationID).First(&conv); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	// 更新会话评分
-	_, err := facades.Orm().Query().Model(&models.Conversation{}).
-		Where("id", conversationID).
-		Update(map[string]interface{}{
-			"rating":      rating,
-			"rating_note": ratingNote,
-		})
-	return err
 }

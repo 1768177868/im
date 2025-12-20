@@ -389,45 +389,6 @@ func (r *VisitorController) EndConversation(ctx apphttp.Context) apphttp.Respons
 	return response.Success(ctx, nil)
 }
 
-// RateConversation 访客评价会话
-func (r *VisitorController) RateConversation(ctx apphttp.Context) apphttp.Response {
-	visitorID := ctx.Request().Input("visitor_id", "")
-	conversationID := cast.ToUint(ctx.Request().Input("conversation_id", "0"))
-	rating := cast.ToUint8(ctx.Request().Input("rating", "0"))
-	ratingNote := ctx.Request().Input("rating_note", "")
-
-	if visitorID == "" || conversationID == 0 {
-		return response.Error(ctx, http.StatusBadRequest, "visitor_id_and_conversation_id_required")
-	}
-
-	if rating < 1 || rating > 5 {
-		return response.Error(ctx, http.StatusBadRequest, "invalid_rating")
-	}
-
-	// 查找访客
-	var visitor models.Visitor
-	if err := facades.Orm().Query().Where("visitor_id", visitorID).First(&visitor); err != nil {
-		return response.Error(ctx, http.StatusNotFound, "visitor_not_found")
-	}
-
-	// 验证会话属于该访客
-	var conversation models.Conversation
-	if err := facades.Orm().Query().Where("id", conversationID).Where("visitor_id", visitor.ID).First(&conversation); err != nil {
-		return response.Error(ctx, http.StatusNotFound, "conversation_not_found")
-	}
-
-	// 只有已结束的会话才能评价
-	if conversation.Status != 2 {
-		return response.Error(ctx, http.StatusBadRequest, "can_only_rate_ended_conversation")
-	}
-
-	if err := r.customerService.RateConversation(conversationID, rating, ratingNote); err != nil {
-		return response.Error(ctx, http.StatusInternalServerError, "rate_conversation_failed")
-	}
-
-	return response.Success(ctx, nil)
-}
-
 // WebSocket 访客 WebSocket 连接
 func (r *VisitorController) WebSocket(ctx apphttp.Context) apphttp.Response {
 	visitorID := ctx.Request().Query("visitor_id", "")
@@ -633,31 +594,63 @@ func (r *VisitorController) PreviewAttachment(ctx apphttp.Context) apphttp.Respo
 	return response.String(http.StatusOK, content)
 }
 
-// Heartbeat 心跳接口，用于更新会话的最后活跃时间
+// Heartbeat 心跳接口，用于更新会话的最后活跃时间和访客状态
 func (r *VisitorController) Heartbeat(ctx apphttp.Context) apphttp.Response {
+	visitorID := ctx.Request().Input("visitor_id", "")
 	conversationID := ctx.Request().Input("conversation_id", "")
-	if conversationID == "" {
-		return response.Error(ctx, http.StatusBadRequest, "conversation_id_required")
+	// status: online（在线/活跃）, away（离开/页面不可见）
+	status := ctx.Request().Input("status", "online")
+
+	if visitorID == "" {
+		return response.Error(ctx, http.StatusBadRequest, "visitor_id_required")
 	}
 
-	conversationIDUint := cast.ToUint(conversationID)
-	if conversationIDUint == 0 {
-		return response.Error(ctx, http.StatusBadRequest, "invalid_conversation_id")
+	// 查找访客
+	var visitor models.Visitor
+	if err := facades.Orm().Query().Where("visitor_id", visitorID).First(&visitor); err != nil {
+		return response.Error(ctx, http.StatusNotFound, "visitor_not_found")
 	}
 
-	// 更新会话的最后消息时间（复用这个字段作为最后活跃时间）
 	now := time.Now()
-	_, err := facades.Orm().Query().
-		Model(&models.Conversation{}).
-		Where("id", conversationIDUint).
-		Where("status", 1). // 只更新进行中的会话
-		Update("last_message_at", now)
-	if err != nil {
-		facades.Log().Errorf("更新会话心跳失败: conversation_id=%d, error=%v", conversationIDUint, err)
-		return response.Error(ctx, http.StatusInternalServerError, "heartbeat_failed")
+
+	// 更新访客的最后活跃时间和状态
+	visitorStatus := uint8(1) // 1: 在线
+	if status == "away" {
+		visitorStatus = 2 // 2: 离开（页面不可见）
+	}
+	facades.Orm().Query().
+		Model(&models.Visitor{}).
+		Where("id", visitor.ID).
+		Update(map[string]interface{}{
+			"status":         visitorStatus,
+			"last_active_at": now,
+		})
+
+	// 如果提供了会话ID，更新会话的最后活跃时间
+	if conversationID != "" {
+		conversationIDUint := cast.ToUint(conversationID)
+		if conversationIDUint > 0 {
+			facades.Orm().Query().
+				Model(&models.Conversation{}).
+				Where("id", conversationIDUint).
+				Where("status", 1). // 只更新进行中的会话
+				Update("last_message_at", now)
+		}
+	}
+
+	// 广播访客状态变更给相关客服
+	if conversationID != "" {
+		conversationIDUint := cast.ToUint(conversationID)
+		if conversationIDUint > 0 {
+			imhub.Hub().BroadcastSystemMessage(conversationIDUint, "visitor_status", map[string]interface{}{
+				"visitor_id": visitor.ID,
+				"status":     status,
+			})
+		}
 	}
 
 	return response.Success(ctx, "heartbeat_success", apphttp.Json{
 		"timestamp": now.Unix(),
+		"status":    status,
 	})
 }

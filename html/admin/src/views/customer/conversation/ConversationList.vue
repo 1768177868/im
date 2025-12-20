@@ -37,9 +37,17 @@
       >
         <vxe-column type="seq" width="60" :title="$t('common.index')" />
         <vxe-column field="id" :title="$t('customer.conversation.id')" width="80" />
-        <vxe-column field="visitor.name" :title="$t('customer.conversation.visitor_name')" width="150">
+        <vxe-column field="visitor.name" :title="$t('customer.conversation.visitor_name')" width="200">
           <template #default="{ row }">
-            {{ row.visitor?.name || row.visitor?.visitor_id || `访客${row.visitor_id}` }}
+            <span>{{ row.visitor?.name || row.visitor?.visitor_id || `访客${row.visitor_id}` }}</span>
+            <el-tag 
+              v-if="row.visitor_online_status"
+              :type="getVisitorStatusType(row.visitor_online_status)" 
+              size="small"
+              style="margin-left: 8px;"
+            >
+              {{ getVisitorStatusText(row.visitor_online_status) }}
+            </el-tag>
           </template>
         </vxe-column>
         <vxe-column field="admin.nickname" :title="$t('customer.conversation.admin_name')" width="120">
@@ -240,6 +248,24 @@ const getStatusType = (status) => {
     3: 'danger'
   }
   return typeMap[status] || ''
+}
+
+// 获取访客状态类型
+const getVisitorStatusType = (status) => {
+  switch (status) {
+    case 'online': return 'success'
+    case 'away': return 'warning'
+    default: return 'info'
+  }
+}
+
+// 获取访客状态文本
+const getVisitorStatusText = (status) => {
+  switch (status) {
+    case 'online': return t('customer.visitor.status_online')
+    case 'away': return t('customer.visitor.status_away')
+    default: return t('customer.visitor.status_offline')
+  }
 }
 
 // 格式化时间

@@ -85,7 +85,29 @@ func (r *CustomerController) GetConversations(ctx apphttp.Context) apphttp.Respo
 		return response.Error(ctx, http.StatusInternalServerError, "get_conversations_failed")
 	}
 
-	return response.Paginate(ctx, conversations, total, page, pageSize)
+	// 为每个会话添加访客实时在线状态
+	type conversationWithVisitorStatus struct {
+		models.Conversation
+		VisitorOnlineStatus string `json:"visitor_online_status"`
+	}
+
+	result := make([]conversationWithVisitorStatus, len(conversations))
+	for i, conv := range conversations {
+		status := "offline"
+		if conv.VisitorID > 0 && imhub.Hub().IsVisitorOnline(conv.VisitorID) {
+			if conv.Visitor.Status == 2 {
+				status = "away"
+			} else {
+				status = "online"
+			}
+		}
+		result[i] = conversationWithVisitorStatus{
+			Conversation:        conv,
+			VisitorOnlineStatus: status,
+		}
+	}
+
+	return response.Paginate(ctx, result, total, page, pageSize)
 }
 
 // GetConversationDetail 获取会话详情
@@ -114,7 +136,33 @@ func (r *CustomerController) GetConversationDetail(ctx apphttp.Context) apphttp.
 	}
 	facades.Orm().Query().Where("conversation_id", conversationID).Order("id ASC").Find(&conversation.Messages)
 
-	return response.Success(ctx, conversation)
+	// 检查访客是否有活跃的 WebSocket 连接（实时在线状态）
+	visitorOnlineStatus := "offline"
+	if conversation.VisitorID > 0 {
+		if imhub.Hub().IsVisitorOnline(conversation.VisitorID) {
+			// 有 WebSocket 连接，检查数据库中的状态判断是在线还是离开
+			if conversation.Visitor.Status == 2 {
+				visitorOnlineStatus = "away"
+			} else {
+				visitorOnlineStatus = "online"
+			}
+		}
+	}
+
+	return response.Success(ctx, map[string]interface{}{
+		"id":                    conversation.ID,
+		"visitor_id":            conversation.VisitorID,
+		"admin_id":              conversation.AdminID,
+		"title":                 conversation.Title,
+		"status":                conversation.Status,
+		"last_message_at":       conversation.LastMessageAt,
+		"created_at":            conversation.CreatedAt,
+		"updated_at":            conversation.UpdatedAt,
+		"visitor":               conversation.Visitor,
+		"admin":                 conversation.Admin,
+		"messages":              conversation.Messages,
+		"visitor_online_status": visitorOnlineStatus,
+	})
 }
 
 // GetMessages 获取会话消息
@@ -282,27 +330,6 @@ func (r *CustomerController) TransferConversation(ctx apphttp.Context) apphttp.R
 	return response.Success(ctx, nil)
 }
 
-// RateConversation 评价会话
-func (r *CustomerController) RateConversation(ctx apphttp.Context) apphttp.Response {
-	conversationID := cast.ToUint(ctx.Request().Input("conversation_id", ""))
-	rating := cast.ToUint8(ctx.Request().Input("rating", "0"))
-	ratingNote := ctx.Request().Input("rating_note", "")
-
-	if conversationID == 0 {
-		return response.Error(ctx, http.StatusBadRequest, "conversation_id_required")
-	}
-
-	if rating < 1 || rating > 5 {
-		return response.Error(ctx, http.StatusBadRequest, "invalid_rating")
-	}
-
-	if err := r.customerService.RateConversation(conversationID, rating, ratingNote); err != nil {
-		return response.Error(ctx, http.StatusInternalServerError, "rate_conversation_failed")
-	}
-
-	return response.Success(ctx, nil)
-}
-
 // MarkMessagesAsRead 标记消息为已读
 func (r *CustomerController) MarkMessagesAsRead(ctx apphttp.Context) apphttp.Response {
 	conversationID := cast.ToUint(ctx.Request().Input("conversation_id", ""))
@@ -339,16 +366,77 @@ func (r *CustomerController) GetOnlineVisitors(ctx apphttp.Context) apphttp.Resp
 	return response.Success(ctx, visitors)
 }
 
-// GetOnlineAdmins 获取在线客服列表
+// GetOnlineAdmins 获取可转接的客服列表（拥有客服角色的管理员，排除当前用户，标注在线状态）
 func (r *CustomerController) GetOnlineAdmins(ctx apphttp.Context) apphttp.Response {
-	adminIDs := imhub.Hub().GetOnlineAdmins()
-
-	var admins []models.Admin
-	if len(adminIDs) > 0 {
-		facades.Orm().Query().Where("id IN ?", adminIDs).Find(&admins)
+	// 获取当前在线的管理员ID列表
+	onlineAdminIDs := imhub.Hub().GetOnlineAdmins()
+	onlineMap := make(map[uint]bool)
+	for _, id := range onlineAdminIDs {
+		onlineMap[id] = true
 	}
 
-	return response.Success(ctx, admins)
+	// 获取当前登录的管理员
+	currentAdmin := r.currentAdmin(ctx)
+	var currentAdminID uint
+	if currentAdmin != nil {
+		currentAdminID = currentAdmin.ID
+	}
+
+	// 查找客服角色
+	var customerServiceRole models.Role
+	if err := facades.Orm().Query().Where("slug", "customer-service").Where("status", 1).First(&customerServiceRole); err != nil {
+		// 没有客服角色，返回空列表
+		return response.Success(ctx, []interface{}{})
+	}
+
+	// 查询拥有客服角色的管理员ID（通过 admin_role 中间表）
+	type AdminRoleLink struct {
+		AdminID uint `gorm:"column:admin_id"`
+	}
+	var adminRoleLinks []AdminRoleLink
+	facades.Orm().Query().Table("admin_role").
+		Where("role_id", customerServiceRole.ID).
+		Select("admin_id").
+		Find(&adminRoleLinks)
+
+	if len(adminRoleLinks) == 0 {
+		return response.Success(ctx, []interface{}{})
+	}
+
+	// 获取客服管理员ID列表（排除当前用户）
+	customerServiceAdminIDs := make([]uint, 0, len(adminRoleLinks))
+	for _, link := range adminRoleLinks {
+		if link.AdminID != currentAdminID {
+			customerServiceAdminIDs = append(customerServiceAdminIDs, link.AdminID)
+		}
+	}
+
+	if len(customerServiceAdminIDs) == 0 {
+		return response.Success(ctx, []interface{}{})
+	}
+
+	// 查询这些管理员的详细信息（启用状态）
+	var admins []models.Admin
+	facades.Orm().Query().
+		Where("id IN ?", customerServiceAdminIDs).
+		Where("status", 1).
+		Find(&admins)
+
+	// 添加在线状态标记
+	type AdminWithOnlineStatus struct {
+		models.Admin
+		IsOnline bool `json:"is_online"`
+	}
+
+	result := make([]AdminWithOnlineStatus, len(admins))
+	for i, admin := range admins {
+		result[i] = AdminWithOnlineStatus{
+			Admin:    admin,
+			IsOnline: onlineMap[admin.ID],
+		}
+	}
+
+	return response.Success(ctx, result)
 }
 
 // WebSocket 客服 WebSocket 连接

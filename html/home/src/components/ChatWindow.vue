@@ -422,13 +422,66 @@ window.addEventListener('beforeunload', () => {
   }
 })
 
+// 当前页面可见性状态
+const isPageVisible = ref(true)
+
 // 监听页面隐藏事件（切换标签页等）
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && conversationId.value && !isConversationEnded.value) {
-    // 页面隐藏时，可以选择结束会话或保持连接
-    // 这里我们选择保持连接，只在页面关闭时结束会话
+  isPageVisible.value = !document.hidden
+  
+  if (conversationId.value && !isConversationEnded.value && visitorId.value) {
+    // 页面可见性变化时，发送心跳更新状态
+    sendHeartbeat(document.hidden ? 'away' : 'online')
   }
 })
+
+// 发送心跳（更新访客状态）
+async function sendHeartbeat(status = 'online') {
+  if (!visitorId.value) return
+  
+  try {
+    await axios.post(`${props.apiBaseUrl}/api/visitor/heartbeat`, {
+      visitor_id: visitorId.value,
+      conversation_id: conversationId.value || '',
+      status: status
+    }, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      transformRequest: [(data) => {
+        let params = new URLSearchParams()
+        for (let key in data) {
+          params.append(key, data[key])
+        }
+        return params.toString()
+      }]
+    })
+  } catch (error) {
+    // 心跳失败静默处理
+    console.log('心跳发送失败:', error)
+  }
+}
+
+// 启动心跳
+function startHeartbeat() {
+  stopHeartbeat() // 先停止之前的心跳
+  
+  // 立即发送一次心跳
+  sendHeartbeat(isPageVisible.value ? 'online' : 'away')
+  
+  // 定时发送心跳
+  heartbeatInterval.value = setInterval(() => {
+    sendHeartbeat(isPageVisible.value ? 'online' : 'away')
+  }, heartbeatIntervalTime)
+}
+
+// 停止心跳
+function stopHeartbeat() {
+  if (heartbeatInterval.value) {
+    clearInterval(heartbeatInterval.value)
+    heartbeatInterval.value = null
+  }
+}
 
 // 注册访客
 async function registerVisitor() {

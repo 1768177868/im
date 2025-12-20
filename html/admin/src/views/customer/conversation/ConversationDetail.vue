@@ -18,6 +18,14 @@
             <el-tag v-if="conversation?.status" :type="getStatusType(conversation.status)" size="small">
               {{ getStatusText(conversation.status) }}
             </el-tag>
+            <el-tag 
+              v-if="conversation?.visitor" 
+              :type="getVisitorStatusType(visitorStatus)" 
+              size="small"
+              class="visitor-status-tag"
+            >
+              {{ getVisitorStatusText(visitorStatus) }}
+            </el-tag>
           </div>
         </div>
         <div class="toolbar-actions">
@@ -65,14 +73,6 @@
             :loading="ending"
           >
             {{ $t('customer.conversation.end') }}
-          </el-button>
-          <el-button 
-            v-if="conversation?.status === 2 && !conversation?.rating"
-            type="primary" 
-            size="small"
-            @click="showRateDialog = true"
-          >
-            {{ $t('customer.conversation.rate') }}
           </el-button>
         </div>
       </div>
@@ -218,36 +218,19 @@
           <el-option
             v-for="admin in onlineAdmins"
             :key="admin.id"
-            :label="admin.nickname || admin.username"
+            :label="`${admin.nickname || admin.username}${admin.is_online ? ' ✓' : ''}`"
             :value="admin.id"
-          />
+          >
+            <span>{{ admin.nickname || admin.username }}</span>
+            <el-tag v-if="admin.is_online" type="success" size="small" style="margin-left: 8px;">{{ $t('customer.visitor.status_online') }}</el-tag>
+            <el-tag v-else type="info" size="small" style="margin-left: 8px;">{{ $t('customer.visitor.status_offline') }}</el-tag>
+          </el-option>
         </el-select>
       </el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="showTransferDialog = false">{{ $t('common.cancel') }}</el-button>
       <el-button type="primary" @click="handleTransferConversation" :loading="transferring">{{ $t('common.confirm') }}</el-button>
-    </template>
-  </el-dialog>
-
-  <!-- 评价会话对话框 -->
-  <el-dialog v-model="showRateDialog" :title="$t('customer.conversation.rate_title')" width="400px">
-    <el-form :model="rateForm" label-width="80px">
-      <el-form-item :label="$t('customer.conversation.rate_label')">
-        <el-rate v-model="rateForm.rating" :max="5" />
-      </el-form-item>
-      <el-form-item :label="$t('customer.conversation.rate_note')">
-        <el-input
-          v-model="rateForm.rating_note"
-          type="textarea"
-          :rows="3"
-          :placeholder="$t('customer.conversation.rate_note_placeholder')"
-        />
-      </el-form-item>
-    </el-form>
-    <template #footer>
-      <el-button @click="showRateDialog = false">{{ $t('common.cancel') }}</el-button>
-      <el-button type="primary" @click="handleRateConversation" :loading="rating" :disabled="!rateForm.rating">{{ $t('common.confirm') }}</el-button>
     </template>
   </el-dialog>
 </template>
@@ -257,7 +240,7 @@ import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox, ElIcon } from 'element-plus'
 import { Loading, ArrowDown, Refresh, InfoFilled, Picture, Document } from '@element-plus/icons-vue'
-import { getConversationDetail, getMessages, sendMessage, endConversation, transferConversation, rateConversation, getOnlineAdmins } from '@/api/customer'
+import { getConversationDetail, getMessages, sendMessage, endConversation, transferConversation, getOnlineAdmins } from '@/api/customer'
 import { uploadFile } from '@/api/attachment'
 import ErrorHandler from '@/utils/errorHandler'
 import Storage from '@/utils/storage'
@@ -295,16 +278,14 @@ const ending = ref(false) // 结束会话中
 const ws = ref(null) // WebSocket 连接
 const wsConnected = ref(false) // WebSocket 连接状态
 const showTransferDialog = ref(false) // 转接对话框
-const showRateDialog = ref(false) // 评价对话框
 const transferring = ref(false) // 转接中
-const rating = ref(false) // 评价中
 const onlineAdmins = ref([]) // 在线客服列表
 const transferForm = ref({ to_admin_id: null }) // 转接表单
-const rateForm = ref({ rating: 0, rating_note: '' }) // 评价表单
 const uploadingFile = ref(null) // 正在上传的文件
 const uploadAction = ref('/api/admin/attachments/upload') // 上传地址
 const uploadHeaders = ref({}) // 上传请求头
 const imageUrlMap = ref(new Map()) // 图片URL缓存（message_id -> blob URL）
+const visitorStatus = ref('offline') // 访客状态：online, away, offline
 
 // 获取会话详情
 const loadConversation = async () => {
@@ -313,6 +294,12 @@ const loadConversation = async () => {
     const response = await getConversationDetail(props.conversationId)
     if (response.code === 200) {
       conversation.value = response.data
+      // 使用后端返回的实时在线状态（基于 WebSocket 连接）
+      if (response.data.visitor_online_status) {
+        visitorStatus.value = response.data.visitor_online_status
+      } else {
+        visitorStatus.value = 'offline'
+      }
     }
   } catch (error) {
     ErrorHandler.handle(error)
@@ -884,34 +871,6 @@ const handleTransferConversation = async () => {
   }
 }
 
-// 评价会话
-const handleRateConversation = async () => {
-  if (!rateForm.value.rating || rateForm.value.rating < 1) {
-    ElMessage.warning(t('customer.conversation.rate_select_warning'))
-    return
-  }
-  
-  rating.value = true
-  try {
-    const response = await rateConversation({
-      conversation_id: props.conversationId,
-      rating: rateForm.value.rating,
-      rating_note: rateForm.value.rating_note
-    })
-    
-    if (response.code === 200) {
-      ElMessage.success(t('customer.conversation.rate_success'))
-      showRateDialog.value = false
-      rateForm.value = { rating: 0, rating_note: '' }
-      await loadConversation() // 重新加载会话信息
-    }
-  } catch (error) {
-    ErrorHandler.handle(error)
-  } finally {
-    rating.value = false
-  }
-}
-
 // 加载在线客服列表
 const loadOnlineAdmins = async () => {
   try {
@@ -935,6 +894,24 @@ const getStatusType = (status) => {
     3: 'danger'
   }
   return typeMap[status] || undefined // 返回 undefined 而不是空字符串
+}
+
+// 获取访客状态类型
+const getVisitorStatusType = (status) => {
+  switch (status) {
+    case 'online': return 'success'
+    case 'away': return 'warning'
+    default: return 'info'
+  }
+}
+
+// 获取访客状态文本
+const getVisitorStatusText = (status) => {
+  switch (status) {
+    case 'online': return t('customer.visitor.status_online')
+    case 'away': return t('customer.visitor.status_away')
+    default: return t('customer.visitor.status_offline')
+  }
 }
 
 // 格式化时间（数据库存储的是 UTC，转换为客户端本地时间显示）
@@ -1066,6 +1043,11 @@ const handleWebSocketMessage = (message) => {
       }
       ElMessage.info(t('customer.conversation.end_success'))
       emit('ended')
+    } else if (message.event === 'visitor_status') {
+      // 处理访客状态变更
+      if (message.data?.status) {
+        visitorStatus.value = message.data.status
+      }
     }
     return
   }

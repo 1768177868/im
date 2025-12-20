@@ -998,6 +998,7 @@
       "os": "Operating System",
       "status": "Status",
       "status_online": "Online",
+      "status_away": "Away",
       "status_offline": "Offline",
       "last_active_at": "Last Active Time"
     }

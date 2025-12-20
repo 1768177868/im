@@ -25,8 +25,6 @@ func Api() {
 		router.Post("messages", visitorController.SendMessage)
 		// 结束会话
 		router.Post("conversations/end", visitorController.EndConversation)
-		// 评价会话
-		router.Post("conversations/rate", visitorController.RateConversation)
 		// 上传图片（公开接口，添加水印）
 		router.Post("upload/image", visitorController.UploadImage)
 		// 预览附件（访客专用，公开接口）

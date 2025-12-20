@@ -107,14 +107,3 @@ export function transferConversation(data) {
   })
 }
 
-/**
- * 评价会话
- */
-export function rateConversation(data) {
-  return request({
-    url: '/customer/conversations/rate',
-    method: 'post',
-    data
-  })
-}
-

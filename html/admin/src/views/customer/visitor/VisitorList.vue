@@ -36,8 +36,8 @@
         <vxe-column field="os" :title="$t('customer.visitor.os')" width="120" />
         <vxe-column field="status" :title="$t('customer.visitor.status')" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.status === 1 ? 'success' : 'info'">
-              {{ row.status === 1 ? $t('customer.visitor.status_online') : $t('customer.visitor.status_offline') }}
+            <el-tag :type="getStatusType(row.status)">
+              {{ getStatusText(row.status) }}
             </el-tag>
           </template>
         </vxe-column>
@@ -95,6 +95,24 @@ const formatTime = (timeStr) => {
   if (!timeStr) return '-'
   const date = new Date(timeStr)
   return date.toLocaleString('zh-CN')
+}
+
+// 获取状态类型
+const getStatusType = (status) => {
+  switch (status) {
+    case 1: return 'success' // 在线
+    case 2: return 'warning' // 离开
+    default: return 'info'   // 离线
+  }
+}
+
+// 获取状态文本
+const getStatusText = (status) => {
+  switch (status) {
+    case 1: return t('customer.visitor.status_online')
+    case 2: return t('customer.visitor.status_away')
+    default: return t('customer.visitor.status_offline')
+  }
 }
 
 onMounted(() => {
