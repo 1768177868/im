@@ -95,11 +95,8 @@ func (r *CustomerController) GetConversations(ctx apphttp.Context) apphttp.Respo
 	for i, conv := range conversations {
 		status := "offline"
 		if conv.VisitorID > 0 && imhub.Hub().IsVisitorOnline(conv.VisitorID) {
-			if conv.Visitor.Status == 2 {
-				status = "away"
-			} else {
-				status = "online"
-			}
+			// 有 WebSocket 连接就是在线
+			status = "online"
 		}
 		result[i] = conversationWithVisitorStatus{
 			Conversation:        conv,
@@ -137,15 +134,14 @@ func (r *CustomerController) GetConversationDetail(ctx apphttp.Context) apphttp.
 	facades.Orm().Query().Where("conversation_id", conversationID).Order("id ASC").Find(&conversation.Messages)
 
 	// 检查访客是否有活跃的 WebSocket 连接（实时在线状态）
+	// 简化逻辑：有 WebSocket 连接就是在线，没有就是离线
+	// "离开"状态通过 WebSocket 实时推送给管理后台
 	visitorOnlineStatus := "offline"
 	if conversation.VisitorID > 0 {
-		if imhub.Hub().IsVisitorOnline(conversation.VisitorID) {
-			// 有 WebSocket 连接，检查数据库中的状态判断是在线还是离开
-			if conversation.Visitor.Status == 2 {
-				visitorOnlineStatus = "away"
-			} else {
-				visitorOnlineStatus = "online"
-			}
+		isOnline := imhub.Hub().IsVisitorOnline(conversation.VisitorID)
+		facades.Log().Debugf("检查访客在线状态: visitor_id=%d, is_online=%v", conversation.VisitorID, isOnline)
+		if isOnline {
+			visitorOnlineStatus = "online"
 		}
 	}
 

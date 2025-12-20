@@ -470,13 +470,17 @@ func (r *VisitorController) UploadImage(ctx apphttp.Context) apphttp.Response {
 	fileData := []byte(fileDataStr)
 
 	// 从配置中获取水印设置
+	watermarkEnabled := utils.GetConfigValueBool("watermark", "watermark_enabled", true)
 	watermarkImagePath := utils.GetConfigValue("watermark", "watermark_image_path", "")
 	watermarkPosition := utils.GetConfigValue("watermark", "watermark_position", "bottom-right")
 	watermarkOpacity := utils.GetConfigValueInt("watermark", "watermark_opacity", 128)
 	watermarkScale := utils.GetConfigValueFloat("watermark", "watermark_scale", 0.3)
 
+	facades.Log().Debugf("访客上传图片 - 水印配置: enabled=%v, path=%s, position=%s, opacity=%d, scale=%f",
+		watermarkEnabled, watermarkImagePath, watermarkPosition, watermarkOpacity, watermarkScale)
+
 	// 如果启用了水印，添加水印
-	if watermarkImagePath != "" {
+	if watermarkEnabled && watermarkImagePath != "" {
 		// 如果路径是 attachment:ID 格式，通过ID查找附件路径
 		var actualPath string
 		if strings.HasPrefix(watermarkImagePath, "attachment:") {
@@ -486,6 +490,7 @@ func (r *VisitorController) UploadImage(ctx apphttp.Context) apphttp.Response {
 				var attachment models.Attachment
 				if err := facades.Orm().Query().Where("id", attachmentID).First(&attachment); err == nil {
 					actualPath = attachment.Path
+					facades.Log().Debugf("找到水印附件: id=%d, path=%s", attachmentID, actualPath)
 				} else {
 					facades.Log().Errorf("查找水印附件失败: %v, id: %d", err, attachmentID)
 				}
@@ -495,6 +500,7 @@ func (r *VisitorController) UploadImage(ctx apphttp.Context) apphttp.Response {
 		}
 
 		if actualPath != "" {
+			facades.Log().Debugf("开始添加水印: path=%s", actualPath)
 			watermarkedData, err := utils.AddWatermark(
 				fileData,
 				actualPath,
@@ -503,11 +509,20 @@ func (r *VisitorController) UploadImage(ctx apphttp.Context) apphttp.Response {
 				watermarkScale,
 			)
 			if err != nil {
-				facades.Log().Errorf("添加水印失败: %v", err)
+				facades.Log().Errorf("添加水印失败: %v, path=%s", err, actualPath)
 				// 水印添加失败，使用原图
 			} else {
 				fileData = watermarkedData
+				facades.Log().Debugf("水印添加成功: 原图大小=%d, 水印后大小=%d", len(fileData), len(watermarkedData))
 			}
+		} else {
+			facades.Log().Errorf("水印路径为空，跳过添加水印")
+		}
+	} else {
+		if !watermarkEnabled {
+			facades.Log().Debugf("水印未启用，跳过添加水印")
+		} else {
+			facades.Log().Debugf("水印图片路径为空，跳过添加水印")
 		}
 	}
 
@@ -613,18 +628,34 @@ func (r *VisitorController) Heartbeat(ctx apphttp.Context) apphttp.Response {
 
 	now := time.Now()
 
+	// 获取访客当前状态
+	var currentStatus uint8
+	if visitor.Status > 0 {
+		currentStatus = visitor.Status
+	} else {
+		currentStatus = 1 // 默认在线
+	}
+
 	// 更新访客的最后活跃时间和状态
 	visitorStatus := uint8(1) // 1: 在线
 	if status == "away" {
 		visitorStatus = 2 // 2: 离开（页面不可见）
 	}
-	facades.Orm().Query().
+
+	// 更新数据库
+	statusChanged := currentStatus != visitorStatus
+	_, err := facades.Orm().Query().
 		Model(&models.Visitor{}).
 		Where("id", visitor.ID).
 		Update(map[string]interface{}{
 			"status":         visitorStatus,
 			"last_active_at": now,
 		})
+	if err != nil {
+		facades.Log().Errorf("心跳更新访客状态失败: visitor_id=%s, status=%s, error=%v", visitorID, status, err)
+	} else {
+		facades.Log().Debugf("心跳更新访客状态成功: visitor_id=%s, status=%s, db_status=%d, changed=%v", visitorID, status, visitorStatus, statusChanged)
+	}
 
 	// 如果提供了会话ID，更新会话的最后活跃时间
 	if conversationID != "" {
@@ -638,10 +669,13 @@ func (r *VisitorController) Heartbeat(ctx apphttp.Context) apphttp.Response {
 		}
 	}
 
-	// 广播访客状态变更给相关客服
-	if conversationID != "" {
+	// 状态变化时广播给管理后台，让管理后台实时更新
+	// 注意：管理后台收到后会基于 WebSocket 连接状态来判断最终显示
+	if conversationID != "" && statusChanged {
 		conversationIDUint := cast.ToUint(conversationID)
 		if conversationIDUint > 0 {
+			// 广播状态变化，管理后台会根据 WebSocket 连接状态决定最终显示
+			// 如果有 WebSocket 连接，即使收到 away，管理后台也会显示 online
 			imhub.Hub().BroadcastSystemMessage(conversationIDUint, "visitor_status", map[string]interface{}{
 				"visitor_id": visitor.ID,
 				"status":     status,

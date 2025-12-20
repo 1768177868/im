@@ -119,10 +119,19 @@ func (h *IMHub) addClient(client *Client) {
 
 	// 根据客户端类型添加到对应映射
 	if client.ClientType == ClientTypeVisitor {
+		// 检查是否是访客的第一个连接（从离线变为在线）
+		wasOffline := len(h.visitorClients[client.UserID]) == 0
 		if _, ok := h.visitorClients[client.UserID]; !ok {
 			h.visitorClients[client.UserID] = make(map[*Client]bool)
 		}
 		h.visitorClients[client.UserID][client] = true
+		// 如果是访客的第一个连接，广播在线状态给管理后台
+		if wasOffline && client.ConversationID > 0 {
+			h.BroadcastSystemMessage(client.ConversationID, "visitor_status", map[string]interface{}{
+				"visitor_id": client.UserID,
+				"status":     "online",
+			})
+		}
 	} else if client.ClientType == ClientTypeAdmin {
 		if _, ok := h.adminClients[client.UserID]; !ok {
 			h.adminClients[client.UserID] = make(map[*Client]bool)
@@ -155,6 +164,13 @@ func (h *IMHub) removeClient(client *Client) {
 			}
 			if len(visitorClients) == 0 {
 				delete(h.visitorClients, client.UserID)
+				// 访客所有连接都断开，广播离线状态给管理后台
+				if client.ConversationID > 0 {
+					h.BroadcastSystemMessage(client.ConversationID, "visitor_status", map[string]interface{}{
+						"visitor_id": client.UserID,
+						"status":     "offline",
+					})
+				}
 			}
 		}
 	} else if client.ClientType == ClientTypeAdmin {

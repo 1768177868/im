@@ -295,6 +295,8 @@ const loadConversation = async () => {
     if (response.code === 200) {
       conversation.value = response.data
       // 使用后端返回的实时在线状态（基于 WebSocket 连接）
+      console.log('会话详情返回:', response.data)
+      console.log('访客在线状态:', response.data.visitor_online_status)
       if (response.data.visitor_online_status) {
         visitorStatus.value = response.data.visitor_online_status
       } else {
@@ -1044,9 +1046,21 @@ const handleWebSocketMessage = (message) => {
       ElMessage.info(t('customer.conversation.end_success'))
       emit('ended')
     } else if (message.event === 'visitor_status') {
-      // 处理访客状态变更
+      // 处理访客状态变更，实时更新
+      // 注意：如果访客有 WebSocket 连接，说明是在线的
+      // 心跳可能发送 "away"（页面不可见），但只要有连接就应该显示 "online"
       if (message.data?.status) {
-        visitorStatus.value = message.data.status
+        if (message.data.status === 'away') {
+          // 收到 away 状态，重新从后端获取状态（后端会基于 WebSocket 连接判断）
+          // 如果有 WebSocket 连接，后端会返回 online
+          loadConversation()
+        } else if (message.data.status === 'online' || message.data.status === 'offline') {
+          // 收到 online 或 offline 状态，直接更新（这些是确定的状态）
+          visitorStatus.value = message.data.status
+        } else {
+          // 其他状态，直接更新
+          visitorStatus.value = message.data.status
+        }
       }
     }
     return

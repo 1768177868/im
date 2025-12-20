@@ -422,8 +422,8 @@ window.addEventListener('beforeunload', () => {
   }
 })
 
-// 当前页面可见性状态
-const isPageVisible = ref(true)
+// 当前页面可见性状态（根据实际状态初始化）
+const isPageVisible = ref(!document.hidden)
 
 // 监听页面隐藏事件（切换标签页等）
 document.addEventListener('visibilitychange', () => {
@@ -829,14 +829,18 @@ function handleWebSocketMessage(message) {
       ElMessage.info('会话已结束，您可以发起新会话')
     }
     
-    // 添加系统消息到消息列表
-    messages.value.push({
-      id: Date.now(),
-      type: 'system',
-      event: message.event,
-      data: message.data,
-      created_at: new Date().toISOString()
-    })
+    // 只添加需要显示的系统消息到消息列表（排除 visitor_status、connected、read 等内部事件）
+    const displayableEvents = ['assigned', 'ended', 'reactivated']
+    if (displayableEvents.includes(message.event)) {
+      messages.value.push({
+        id: Date.now(),
+        type: 'system',
+        event: message.event,
+        data: message.data,
+        created_at: new Date().toISOString()
+      })
+    }
+    return // 系统消息处理完毕，直接返回
   } else {
     // 普通消息
     // 统一消息格式：将 WebSocket 消息格式转换为标准格式
