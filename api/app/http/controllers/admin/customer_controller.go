@@ -73,6 +73,34 @@ func (r *CustomerController) GetConversations(ctx apphttp.Context) apphttp.Respo
 	}
 
 	// 如果指定了 admin_id，查询指定客服的会话；否则查询所有会话
+	// 注意：有搜索条件时不使用缓存（搜索结果变化频繁）
+	useCache := adminID != "" && status == "" && conversationIDStr == "" && visitorName == "" && page == 1
+	
+	if useCache {
+		cacheService := services.NewMessageCacheService()
+		adminIDUint := cast.ToUint(adminID)
+		cachedConversations, err := cacheService.GetCachedConversations(adminIDUint)
+		if err == nil && len(cachedConversations) > 0 {
+			// 缓存命中，添加在线状态后返回
+			type conversationWithVisitorStatus struct {
+				models.Conversation
+				VisitorOnlineStatus string `json:"visitor_online_status"`
+			}
+			result := make([]conversationWithVisitorStatus, len(cachedConversations))
+			for i, conv := range cachedConversations {
+				visitorStatus := "offline"
+				if conv.VisitorID > 0 && imhub.Hub().IsVisitorOnline(conv.VisitorID) {
+					visitorStatus = "online"
+				}
+				result[i] = conversationWithVisitorStatus{
+					Conversation:        conv,
+					VisitorOnlineStatus: visitorStatus,
+				}
+			}
+			return response.Paginate(ctx, result, int64(len(result)), page, pageSize)
+		}
+	}
+	
 	if adminID != "" {
 		adminIDUint := cast.ToUint(adminID)
 		conversations, total, err = r.customerService.GetAdminConversationsPaginated(adminIDUint, statusUint, page, pageSize)
@@ -83,6 +111,13 @@ func (r *CustomerController) GetConversations(ctx apphttp.Context) apphttp.Respo
 
 	if err != nil {
 		return response.Error(ctx, http.StatusInternalServerError, "get_conversations_failed")
+	}
+	
+	// 如果使用了缓存且是第一页，缓存结果
+	if useCache && page == 1 && len(conversations) > 0 {
+		cacheService := services.NewMessageCacheService()
+		adminIDUint := cast.ToUint(adminID)
+		_ = cacheService.CacheConversations(adminIDUint, conversations)
 	}
 
 	// 为每个会话添加访客实时在线状态
@@ -379,13 +414,24 @@ func (r *CustomerController) MarkMessagesAsRead(ctx apphttp.Context) apphttp.Res
 	return response.Success(ctx, nil)
 }
 
-// GetOnlineVisitors 获取在线访客列表
+// GetOnlineVisitors 获取在线访客列表（带缓存）
 func (r *CustomerController) GetOnlineVisitors(ctx apphttp.Context) apphttp.Response {
+	cacheService := services.NewMessageCacheService()
+	
+	// 尝试从缓存获取
+	cachedVisitors, err := cacheService.GetCachedOnlineVisitors()
+	if err == nil && len(cachedVisitors) > 0 {
+		return response.Success(ctx, cachedVisitors)
+	}
+	
+	// 缓存未命中，从数据库查询
 	visitorIDs := imhub.Hub().GetOnlineVisitors()
 
 	var visitors []models.Visitor
 	if len(visitorIDs) > 0 {
 		facades.Orm().Query().Where("id IN ?", visitorIDs).Find(&visitors)
+		// 缓存结果
+		_ = cacheService.CacheOnlineVisitors(visitors)
 	}
 
 	return response.Success(ctx, visitors)

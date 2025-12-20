@@ -94,7 +94,8 @@ func newIMHub() *IMHub {
 		conversationClients: make(map[uint]map[*Client]bool),
 		register:            make(chan *Client),
 		unregister:          make(chan *Client),
-		broadcast:           make(chan *BroadcastMessage, 100),
+		// 增加广播通道缓冲，支持更高并发（从100增加到1000）
+		broadcast: make(chan *BroadcastMessage, 1000),
 	}
 }
 

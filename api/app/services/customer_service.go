@@ -215,9 +215,14 @@ func (s *CustomerServiceImpl) SendMessage(conversationID uint, senderType string
 		IsRead:         false,
 	}
 
+	// 使用主表存储消息
 	if err := facades.Orm().Query().Create(&message); err != nil {
 		return nil, err
 	}
+
+	// 清除相关缓存
+	cacheService := NewMessageCacheService()
+	_ = cacheService.InvalidateConversationCache(conversationID)
 
 	// 更新会话的最后消息时间
 	now := time.Now()
@@ -258,6 +263,11 @@ func (s *CustomerServiceImpl) MarkConversationMessagesAsRead(conversationID uint
 			"is_read": true,
 			"read_at": now,
 		})
+
+	// 清除缓存
+	cacheService := NewMessageCacheService()
+	_ = cacheService.InvalidateConversationCache(conversationID)
+
 	return err
 }
 
@@ -273,8 +283,23 @@ func (s *CustomerServiceImpl) EndConversation(conversationID uint) error {
 	return err
 }
 
-// GetConversationMessages 获取会话消息列表
+// GetConversationMessages 获取会话消息列表（支持缓存）
 func (s *CustomerServiceImpl) GetConversationMessages(conversationID uint, page, pageSize int) ([]models.Message, int64, error) {
+	cacheService := NewMessageCacheService()
+
+	// 如果是第一页，尝试从缓存获取（缓存最近100条消息）
+	if page == 1 {
+		cachedMessages, err := cacheService.GetCachedConversationMessages(conversationID)
+		if err == nil && len(cachedMessages) > 0 {
+			// 缓存命中，返回缓存的数据
+			if len(cachedMessages) >= pageSize {
+				return cachedMessages[:pageSize], int64(len(cachedMessages)), nil
+			}
+			return cachedMessages, int64(len(cachedMessages)), nil
+		}
+	}
+
+	// 缓存未命中，从数据库查询
 	var messages []models.Message
 	var total int64
 
@@ -287,15 +312,31 @@ func (s *CustomerServiceImpl) GetConversationMessages(conversationID uint, page,
 		return nil, 0, err
 	}
 
-	// 分页查询 - 重新创建查询避免count影响
+	// 分页查询 - 使用 created_at 排序以利用联合索引 (conversation_id, created_at)
 	offset := (page - 1) * pageSize
-	if err := facades.Orm().Query().Model(&models.Message{}).Where("conversation_id", conversationID).Order("id DESC").Limit(pageSize).Offset(offset).Find(&messages); err != nil {
+	if err := facades.Orm().Query().Model(&models.Message{}).
+		Where("conversation_id", conversationID).
+		Order("created_at DESC"). // 使用 created_at 排序以利用联合索引
+		Order("id DESC").         // 如果 created_at 相同，按 id 排序
+		Limit(pageSize).
+		Offset(offset).
+		Find(&messages); err != nil {
 		return nil, 0, err
 	}
 
 	// 反转顺序使最新消息在最后
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
+	}
+
+	// 如果是第一页，缓存结果
+	if page == 1 && len(messages) > 0 {
+		// 缓存最近100条
+		cacheSize := 100
+		if len(messages) < cacheSize {
+			cacheSize = len(messages)
+		}
+		_ = cacheService.CacheConversationMessages(conversationID, messages[:cacheSize])
 	}
 
 	return messages, total, nil
@@ -333,8 +374,9 @@ func (s *CustomerServiceImpl) GetVisitorAllMessages(visitorID uint, beforeID uin
 	}
 
 	// 查询并判断是否有更多数据
+	// 使用 created_at 排序以利用索引，提升查询性能
 	var messages []models.Message
-	if err := query.Order("id DESC").Limit(limit + 1).Find(&messages); err != nil {
+	if err := query.Order("created_at DESC").Order("id DESC").Limit(limit + 1).Find(&messages); err != nil {
 		return nil, false, err
 	}
 

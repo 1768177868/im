@@ -44,6 +44,7 @@ func (kernel Kernel) Migrations() []schema.Migration {
 		&migrations.M20250401000001CreateVisitorsTable{},
 		&migrations.M20250401000002CreateConversationsTable{},
 		&migrations.M20250401000003CreateMessagesTable{},
+		&migrations.M20250401000004AddMessagesIndexes{}, // 添加消息表索引优化
 		&migrations.M20250401000004CreateVisitorSessionsTable{},
 	}
 }
