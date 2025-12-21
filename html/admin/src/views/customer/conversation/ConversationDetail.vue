@@ -242,6 +242,7 @@ import { ElMessage, ElMessageBox, ElIcon } from 'element-plus'
 import { Loading, ArrowDown, Refresh, InfoFilled, Picture, Document } from '@element-plus/icons-vue'
 import { getConversationDetail, getMessages, sendMessage, endConversation, transferConversation, getOnlineAdmins, getVisitorStatus } from '@/api/customer'
 import { uploadFile } from '@/api/attachment'
+import { compressImage } from '@/utils/imageCompress'
 import ErrorHandler from '@/utils/errorHandler'
 import Storage from '@/utils/storage'
 import axios from 'axios'
@@ -659,7 +660,7 @@ const handleEmojiSelect = (emojiCode) => {
 }
 
 // 文件上传前处理
-const beforeUpload = (file) => {
+const beforeUpload = async (file) => {
   // 验证文件类型，只允许图片
   if (!file.type.startsWith('image/')) {
     ElMessage.error(t('customer.conversation.only_image_allowed') || '只能上传图片文件')
@@ -668,24 +669,48 @@ const beforeUpload = (file) => {
   
   uploadingFile.value = file
   
-  // 上传文件
-  uploadFile(file, (progress) => {
-    // 上传进度处理
-  }).then(response => {
-    if (response.code === 200) {
-      const attachment = response.data || response
-      // 发送图片消息（只允许图片，所以 isImage 始终为 true）
-      handleSendFileMessage(attachment, true)
-    } else {
-      ElMessage.error(response.message || t('customer.conversation.upload_failed'))
+  try {
+    // 先压缩图片
+    const compressedFile = await compressImage(file)
+    
+    // 上传压缩后的文件
+    uploadFile(compressedFile, (progress) => {
+      // 上传进度处理
+    }).then(response => {
+      if (response.code === 200) {
+        const attachment = response.data || response
+        // 发送图片消息（只允许图片，所以 isImage 始终为 true）
+        handleSendFileMessage(attachment, true)
+      } else {
+        ElMessage.error(response.message || t('customer.conversation.upload_failed'))
+        uploadingFile.value = null
+      }
+    }).catch(error => {
+      console.error('Upload error:', error)
+      ElMessage.error(error.response?.data?.message || error.message || t('customer.conversation.upload_failed'))
       uploadingFile.value = null
-    }
-  }).catch(error => {
-    console.error('Upload error:', error)
-    ElMessage.error(error.response?.data?.message || error.message || t('customer.conversation.upload_failed'))
-    uploadingFile.value = null
-    ErrorHandler.handle(error)
-  })
+      ErrorHandler.handle(error)
+    })
+  } catch (error) {
+    console.error('Image compress error:', error)
+    // 压缩失败时使用原文件
+    uploadFile(file, (progress) => {
+      // 上传进度处理
+    }).then(response => {
+      if (response.code === 200) {
+        const attachment = response.data || response
+        handleSendFileMessage(attachment, true)
+      } else {
+        ElMessage.error(response.message || t('customer.conversation.upload_failed'))
+        uploadingFile.value = null
+      }
+    }).catch(error => {
+      console.error('Upload error:', error)
+      ElMessage.error(error.response?.data?.message || error.message || t('customer.conversation.upload_failed'))
+      uploadingFile.value = null
+      ErrorHandler.handle(error)
+    })
+  }
   
   return false // 阻止默认上传
 }

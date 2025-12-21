@@ -183,6 +183,7 @@ import { ElMessage, ElIcon } from 'element-plus'
 import { Loading, ArrowDown, Picture } from '@element-plus/icons-vue'
 import axios from 'axios'
 import EmojiPicker from './EmojiPicker.vue'
+import { compressImage } from '../utils/imageCompress'
 
 // 简单的 i18n 对象
 const i18n = {
@@ -1112,7 +1113,7 @@ function handleScroll() {
 }
 
 // 文件上传前处理
-const beforeUpload = (file) => {
+const beforeUpload = async (file) => {
   // 验证文件类型，只允许图片
   if (!file.type.startsWith('image/')) {
     ElMessage.error(t('onlyImageAllowed') || '只能上传图片文件')
@@ -1121,28 +1122,56 @@ const beforeUpload = (file) => {
   
   uploadingFile.value = file
   
-  // 使用 axios 上传文件
-  const formData = new FormData()
-  formData.append('file', file)
-  
-  axios.post(uploadAction.value, formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    }
-  }).then(response => {
-    if (response.data.code === 200) {
-      const attachment = response.data.data || response.data
-      // 发送图片消息
-      handleSendImageMessage(attachment)
-    } else {
-      ElMessage.error(response.data.message || t('uploadFailed') || '上传失败')
+  try {
+    // 先压缩图片
+    const compressedFile = await compressImage(file)
+    
+    // 使用 axios 上传压缩后的文件
+    const formData = new FormData()
+    formData.append('file', compressedFile)
+    
+    axios.post(uploadAction.value, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    }).then(response => {
+      if (response.data.code === 200) {
+        const attachment = response.data.data || response.data
+        // 发送图片消息
+        handleSendImageMessage(attachment)
+      } else {
+        ElMessage.error(response.data.message || t('uploadFailed') || '上传失败')
+        uploadingFile.value = null
+      }
+    }).catch(error => {
+      console.error('Upload error:', error)
+      ElMessage.error(error.response?.data?.message || error.message || t('uploadFailed') || '上传失败')
       uploadingFile.value = null
-    }
-  }).catch(error => {
-    console.error('Upload error:', error)
-    ElMessage.error(error.response?.data?.message || error.message || t('uploadFailed') || '上传失败')
-    uploadingFile.value = null
-  })
+    })
+  } catch (error) {
+    console.error('Image compress error:', error)
+    // 压缩失败时使用原文件
+    const formData = new FormData()
+    formData.append('file', file)
+    
+    axios.post(uploadAction.value, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    }).then(response => {
+      if (response.data.code === 200) {
+        const attachment = response.data.data || response.data
+        handleSendImageMessage(attachment)
+      } else {
+        ElMessage.error(response.data.message || t('uploadFailed') || '上传失败')
+        uploadingFile.value = null
+      }
+    }).catch(error => {
+      console.error('Upload error:', error)
+      ElMessage.error(error.response?.data?.message || error.message || t('uploadFailed') || '上传失败')
+      uploadingFile.value = null
+    })
+  }
   
   return false // 阻止默认上传
 }
