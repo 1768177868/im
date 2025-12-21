@@ -57,7 +57,11 @@
             <el-avatar :size="40">
               {{ (conv.visitor?.name || conv.visitor?.visitor_id || '访')?.charAt(0) }}
             </el-avatar>
-            <span v-if="conv.status === 1" class="status-dot online"></span>
+            <span 
+              v-if="conv.visitor_online_status" 
+              class="status-dot" 
+              :class="conv.visitor_online_status === 'online' ? 'online' : 'offline'"
+            ></span>
           </div>
           <div class="conv-info">
             <div class="conv-header">
@@ -404,6 +408,10 @@ onUnmounted(() => {
 
 .status-dot.online {
   background: #67c23a;
+}
+
+.status-dot.offline {
+  background: #f56c6c;
 }
 
 .conv-info {
